@@ -493,103 +493,11 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-// ==========================================
-// 🌐 อัปเกรดเซิร์ฟเวอร์จำลอง ให้กลายเป็น API สำหรับ Chrome Extension
-// ==========================================
 const PORT = process.env.PORT ?? '10000';
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('jookCast is running and casting music! 🎙️🎵');
+}).listen(PORT, () => { console.log(`🌐 สแตนด์บายพอร์ตจำลองที่ช่อง ${PORT}`); });
 
-function parseYouTubeDuration(durationStr: string): string {
-  const match = durationStr.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
-  if (!match) return '0:00';
-  const hours = parseInt(match[1] || '0');
-  const minutes = parseInt(match[2] || '0');
-  const seconds = parseInt(match[3] || '0');
-  
-  const totalMinutes = hours * 60 + minutes;
-  const formattedSeconds = seconds < 10 ? `0${seconds}` : seconds;
-  return `${totalMinutes}:${formattedSeconds}`;
-}
-
-http.createServer(async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Content-Type', 'application/json');
-
-  if (req.method === 'OPTIONS') {
-    res.writeHead(200);
-    res.end();
-    return;
-  }
-
-  if (req.url === '/api/queue-status') {
-    try {
-      const songs = await getPlaylistSongs(10); // ดึงไอเทมในเพลย์ลิสต์ล่าสุด 10 เพลง
-      
-      if (songs.length === 0) {
-        res.writeHead(200);
-        res.end(JSON.stringify({
-          status: 'success',
-          nowPlaying: null,
-          queue: [],
-          totalInQueue: 0,
-          votes: { current: voteSkipUsers.size, required: REQUIRED_VOTES }
-        }));
-        return;
-      }
-
-      // ดึง Video IDs ทั้งหมดเพื่อไปขอข้อมูลเชิงลึก (เช่น Duration)
-      const videoIds = songs.map(song => song.snippet?.resourceId?.videoId).filter(Boolean) as string[];
-      
-      const youtube = getYouTubeClient();
-      const videoDetailsResponse = await youtube.videos.list({
-        part: ['contentDetails'],
-        id: videoIds,
-      });
-      
-      // Map ข้อมูล Duration เก็บไว้ตาม Video ID
-      const durationMap = new Map<string, string>();
-      videoDetailsResponse.data.items?.forEach(item => {
-        if (item.id && item.contentDetails?.duration) {
-          durationMap.set(item.id, parseYouTubeDuration(item.contentDetails.duration));
-        }
-      });
-
-      // ประกอบข้อมูลจริงส่งกลับออกไป
-      const queueData = songs.map((song, index) => {
-        const videoId = song.snippet?.resourceId?.videoId || '';
-        return {
-          index: index + 1,
-          playlistItemId: song.id || '',
-          videoId: videoId,
-          title: song.snippet?.title || 'Unknown Title',
-          channel: song.snippet?.videoOwnerChannelTitle || song.snippet?.channelTitle || 'Unknown Channel',
-          // ใช้รูป High Resolution หากมี ถ้าไม่มีให้ถอยไปใช้ Default
-          thumbnail: song.snippet?.thumbnails?.high?.url || song.snippet?.thumbnails?.medium?.url || song.snippet?.thumbnails?.default?.url || '',
-          duration: durationMap.get(videoId) || '0:00'
-        };
-      });
-
-      const responsePayload = {
-        status: 'success',
-        nowPlaying: queueData[0] || null,
-        queue: queueData.slice(1),
-        totalInQueue: queueData.length,
-        votes: {
-          current: voteSkipUsers.size,
-          required: REQUIRED_VOTES
-        }
-      };
-
-      res.writeHead(200);
-      res.end(JSON.stringify(responsePayload));
-    } catch (error: any) {
-      res.writeHead(500);
-      res.end(JSON.stringify({ status: 'error', message: error.message }));
-    }
-  } else {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('jookCast API Server is live 🎙️🎵');
-  }
-}).listen(PORT, () => {
-  console.log(`🌐 API Live on Port ${PORT}`);
-});
+if (!DISCORD_TOKEN) console.error('❌ ไม่พบ DISCORD_TOKEN ในไฟล์ .env');
+else client.login(DISCORD_TOKEN);
