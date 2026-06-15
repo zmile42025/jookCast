@@ -1,32 +1,35 @@
-import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, PermissionFlagsBits } from 'discord.js';
-import { google } from 'googleapis';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import dotenv from 'dotenv';
-import http from 'http';
-const PORT = process.env.PORT ?? '10000';
-
-http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('jookCast is running and casting music! 🎙️🎵');
-}).listen(PORT, () => {
-  console.log(`🌐 หลอก Render สำเร็จ: เปิดพอร์ตสแตนด์บายที่ช่อง ${PORT} เรียบร้อย`);
-});
+import {
+  Client,
+  GatewayIntentBits,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  PermissionFlagsBits,
+  EmbedBuilder,
+} from "discord.js";
+import { google } from "googleapis";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import dotenv from "dotenv";
+import http from "http";
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const CREDENTIALS_PATH = path.join(__dirname, 'credentials.json');
-const TOKEN_PATH = path.join(__dirname, 'token.json');
-const CONFIG_PATH = path.join(__dirname, 'config.json');
+const CREDENTIALS_PATH = path.join(__dirname, "credentials.json");
+const TOKEN_PATH = path.join(__dirname, "token.json");
+const CONFIG_PATH = path.join(__dirname, "config.json");
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const SCOPES = ['https://www.googleapis.com/auth/youtube'];
+const SCOPES = ["https://www.googleapis.com/auth/youtube"];
 
-// --- ระบบโหลด/บันทึกการตั้งค่า Playlist แบบ Realtime ---
+// --- ระบบบันทึกโหวต Skip แบบชั่วคราว ---
+let voteSkipUsers = new Set<string>();
+const REQUIRED_VOTES = 3; // สามารถเปลี่ยนจำนวนคนโหวตตรงนี้ได้
+
 interface BotConfig {
   playlistId: string | null;
 }
@@ -34,7 +37,7 @@ interface BotConfig {
 function loadConfig(): BotConfig {
   if (fs.existsSync(CONFIG_PATH)) {
     try {
-      return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
     } catch {
       return { playlistId: process.env.PLAYLIST_ID ?? null };
     }
@@ -43,10 +46,9 @@ function loadConfig(): BotConfig {
 }
 
 function saveConfig(config: BotConfig) {
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8');
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
 }
 
-// 1. ตั้งค่า Discord Bot Client
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -55,263 +57,497 @@ const client = new Client({
   ],
 });
 
-// 2. ฟังก์ชันโหลดสิทธิ์ YouTube OAuth2
 function getYouTubeOAuth2Client() {
   if (!fs.existsSync(CREDENTIALS_PATH)) {
-    throw new Error('ไม่พบไฟล์ credentials.json ในเครื่อง กรุณาใส่ไฟล์ก่อนรันบอท');
+    throw new Error(
+      "ไม่พบไฟล์ credentials.json ในเครื่อง กรุณาใส่ไฟล์ก่อนรันบอท",
+    );
   }
-  const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8'));
+  const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, "utf8"));
   const { client_secret, client_id, redirect_uris } = credentials.installed;
   return new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
 }
 
 function getYouTubeClient() {
   if (!fs.existsSync(TOKEN_PATH)) {
-    throw new Error('บอทยังไม่ได้ล็อกอินบัญชี YouTube Host กรุณาใช้คำสั่ง `/setup_host` บน Discord');
+    throw new Error(
+      "บอทยังไม่ได้ล็อกอินบัญชี YouTube Host กรุณาใช้คำสั่ง `/setup_host` บน Discord",
+    );
   }
   const oAuth2Client = getYouTubeOAuth2Client();
-  const token = JSON.parse(fs.readFileSync(TOKEN_PATH, 'utf8'));
+  const token = JSON.parse(fs.readFileSync(TOKEN_PATH, "utf8"));
   oAuth2Client.setCredentials(token);
-  return google.youtube({ version: 'v3', auth: oAuth2Client });
+  return google.youtube({ version: "v3", auth: oAuth2Client });
 }
 
-// 3. ฟังก์ชันสำหรับแกะเอา Video ID ออกจากลิงก์ YouTube
 function extractVideoId(url: string): string | null {
-  const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+  const regExp =
+    /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
   const match = url.match(regExp);
   const videoId = match?.[2];
-  return (videoId && videoId.length === 11) ? videoId : null;
+  return videoId && videoId.length === 11 ? videoId : null;
 }
 
-// 4. ฟังก์ชันยิง API ไปแอดเพลงเข้า Playlist บน YouTube
+// ─── YOUTUBE INTERACTION FUNCTIONS ──────────────────────────────────────────
+
 async function addSongToPlaylist(videoId: string) {
   const config = loadConfig();
-  if (!config.playlistId) {
-    throw new Error('ยังไม่ได้ตั้งค่าไอดี Playlist กรุณาใช้คำสั่ง `/set_playlist` หรือ `/create_playlist` ก่อน');
-  }
-
+  if (!config.playlistId)
+    throw new Error("ยังไม่ได้ตั้งค่าไอดี Playlist ปลายทาง");
   const youtube = getYouTubeClient();
   const response = await youtube.playlistItems.insert({
-    part: ['snippet'],
+    part: ["snippet"],
     requestBody: {
       snippet: {
         playlistId: config.playlistId,
-        resourceId: {
-          kind: 'youtube#video',
-          videoId: videoId,
-        },
+        resourceId: { kind: "youtube#video", videoId: videoId },
       },
     },
   });
-  return response.data.snippet?.title;
+  return response.data.snippet;
 }
 
-// ==========================================
-// ฟังก์ชันสั่ง YouTube ให้สร้าง Playlist ใหม่เอี่ยม
-// ==========================================
 async function createNewYouTubePlaylist(title: string, privacyStatus: string) {
   const youtube = getYouTubeClient();
   const response = await youtube.playlists.insert({
-    part: ['snippet', 'status'],
+    part: ["snippet", "status"],
     requestBody: {
       snippet: {
         title: title,
-        description: 'เพลย์ลิสต์นี้สร้างอัตโนมัติโดย Discord jookCast Bot',
+        description: "เพลย์ลิสต์นี้สร้างอัตโนมัติโดย Discord jookCast Bot",
       },
-      status: {
-        privacyStatus: privacyStatus,
-      },
+      status: { privacyStatus: privacyStatus },
     },
   });
   return response.data.id;
 }
 
-// ==========================================
-// 5. ลงทะเบียนชุดคำสั่ง Slash Commands ทั้งหมด (อัปเดตชื่อ jookCast)
-// ==========================================
+// ดึงรายการเพลงใน Playlist
+async function getPlaylistSongs(maxResults = 10) {
+  const config = loadConfig();
+  if (!config.playlistId) throw new Error("ยังไม่ได้ตั้งค่าไอดี Playlist");
+  const youtube = getYouTubeClient();
+  const response = await youtube.playlistItems.list({
+    part: ["snippet", "id"],
+    playlistId: config.playlistId,
+    maxResults: maxResults,
+  });
+  return response.data.items || [];
+}
+
+// ลบเพลงตาม ID ของรายการใน Playlist
+async function removeSongFromPlaylist(playlistItemId: string) {
+  const youtube = getYouTubeClient();
+  await youtube.playlistItems.delete({ id: playlistItemId });
+}
+
+// ─── REGISTER SLASH COMMANDS ────────────────────────────────────────────────
+
 const commands = [
   new SlashCommandBuilder()
-    .setName('add')
-    .setDescription('หยอดเพลงลงตู้คิวคาสต์ jookCast (YouTube Playlist)')
-    .addStringOption(option =>
-      option.setName('url')
-        .setDescription('ลิงก์เพลง YouTube ที่ต้องการส่งเข้าคิว jookCast')
-        .setRequired(true)
+    .setName("add")
+    .setDescription("หยอดเพลงลงตู้คิวคาสต์ jookCast (YouTube Playlist)")
+    .addStringOption((opt) =>
+      opt.setName("url").setDescription("ลิงก์เพลง YouTube").setRequired(true),
     ),
 
   new SlashCommandBuilder()
-    .setName('setup_host')
-    .setDescription('[Admin Only] ขอลิงก์ล็อกอินยืนยันสิทธิ์บัญชี YouTube สำหรับ Host ของ jookCast')
+    .setName("queue")
+    .setDescription("ดูรายชื่อเพลงคิวปัจจุบันใน jookCast"),
+
+  new SlashCommandBuilder()
+    .setName("nowplaying")
+    .setDescription("ดูเพลงที่กำลังเล่นหรือเพลงล่าสุดบนตู้คิว"),
+
+  new SlashCommandBuilder()
+    .setName("voteskip")
+    .setDescription("ร่วมโหวตข้ามเพลงกร่อยที่อยู่หัวคิวปัจจุบัน"),
+
+  new SlashCommandBuilder()
+    .setName("lucky")
+    .setDescription("ระบบสุ่มเพลงฮิตเข้าตู้ jookCast ดับเหงา"),
+
+  new SlashCommandBuilder()
+    .setName("setup_host")
+    .setDescription("[Admin Only] ขอลิงก์ล็อกอินยืนยันสิทธิ์สำหรับ Host")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   new SlashCommandBuilder()
-    .setName('submit_code')
-    .setDescription('[Admin Only] ส่งรหัส Code หรือ URL ที่ได้หลังจากกดล็อกอินเข้าสู่ระบบ jookCast สำเร็จ')
-    .addStringOption(option =>
-      option.setName('code_or_url')
-        .setDescription('วาง URL ทั้งดุ้น หรือเฉพาะตัวรหัส Code ที่ได้มา')
-        .setRequired(true)
+    .setName("submit_code")
+    .setDescription("[Admin Only] ส่งรหัส Code ที่ได้จากการล็อกอิน")
+    .addStringOption((opt) =>
+      opt
+        .setName("code_or_url")
+        .setDescription("วาง URL หรือรหัส Code")
+        .setRequired(true),
     )
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   new SlashCommandBuilder()
-    .setName('set_playlist')
-    .setDescription('[Admin Only] ตั้งค่าหรือเปลี่ยนไอดี YouTube Playlist ปลายทางของ jookCast')
-    .addStringOption(option =>
-      option.setName('playlist_id')
-        .setDescription('ใส่ YouTube Playlist ID (เช่น PLxxxxxxxx...)')
-        .setRequired(true)
+    .setName("set_playlist")
+    .setDescription("[Admin Only] เปลี่ยนไอดี YouTube Playlist ปลายทาง")
+    .addStringOption((opt) =>
+      opt
+        .setName("playlist_id")
+        .setDescription("ใส่ YouTube Playlist ID")
+        .setRequired(true),
     )
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   new SlashCommandBuilder()
-    .setName('create_playlist')
-    .setDescription('[Admin Only] สั่ง jookCast สร้าง YouTube Playlist ใหม่เอี่ยมให้ทันที')
-    .addStringOption(option =>
-      option.setName('name')
-        .setDescription('ตั้งชื่อเพลย์ลิสต์ที่คุณต้องการ (เช่น คลังเพลง jookCast คืนนี้)')
-        .setRequired(true)
+    .setName("create_playlist")
+    .setDescription("[Admin Only] สั่งสร้าง YouTube Playlist ใหม่เอี่ยม")
+    .addStringOption((opt) =>
+      opt
+        .setName("name")
+        .setDescription("ตั้งชื่อเพลย์ลิสต์")
+        .setRequired(true),
     )
-    .addStringOption(option =>
-      option.setName('privacy')
-        .setDescription('ตั้งค่าความเป็นส่วนตัว (แนะนำ unlisted คนมีลิงก์ถึงจะเห็น)')
+    .addStringOption((opt) =>
+      opt
+        .setName("privacy")
+        .setDescription("ความเป็นส่วนตัว")
         .setRequired(false)
         .addChoices(
-          { name: 'Unlisted (ไม่เป็นสาธารณะ - แนะนำ)', value: 'unlisted' },
-          { name: 'Public (สาธารณะใครก็ค้นเจอ)', value: 'public' },
-          { name: 'Private (ส่วนตัวเห็นคนเดียว)', value: 'private' }
-        )
+          { name: "Unlisted (ไม่สาธารณะ - แนะนำ)", value: "unlisted" },
+          { name: "Public (สาธารณะ)", value: "public" },
+          { name: "Private (ส่วนตัว)", value: "private" },
+        ),
     )
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-].map(command => command.toJSON());
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+  new SlashCommandBuilder()
+    .setName("remove")
+    .setDescription("[Admin Only] ลบเพลงออกจากคิวตามลำดับตัวเลข")
+    .addIntegerOption((opt) =>
+      opt
+        .setName("index")
+        .setDescription("ลำดับเพลงในคำสั่ง /queue (เช่น 1, 2, 3)")
+        .setRequired(true),
+    )
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+  new SlashCommandBuilder()
+    .setName("clear_queue")
+    .setDescription("[Admin Only] ล้างเพลงทั้งหมดในตู้ jookCast ให้โล่งเอี่ยม")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+  new SlashCommandBuilder()
+    .setName("jookcast_status")
+    .setDescription("[Admin Only] ตรวจสอบสถิติและสถานะการเชื่อมต่อของระบบ")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+].map((cmd) => cmd.toJSON());
 
 async function registerSlashCommands(clientId: string) {
   if (!DISCORD_TOKEN) return;
-  const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
-
+  const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
   try {
-    console.log('⏳ กำลังอัปเดตระบบคำสั่ง Slash Commands สำหรับ jookCast...');
+    console.log("⏳ กำลังอัปเดตระบบคำสั่ง Slash Commands สำหรับ jookCast...");
     await rest.put(Routes.applicationCommands(clientId), { body: commands });
-    console.log('✅ อัปเดต Slash Commands ของ jookCast ทั้งหมดเรียบร้อย!');
+    console.log("✅ อัปเดต Slash Commands ของ jookCast ทั้งหมดเรียบร้อย!");
   } catch (error) {
-    console.error('❌ เกิดข้อผิดพลาดในการลงทะเบียนคำสั่ง:', error);
+    console.error("❌ เกิดข้อผิดพลาดในการลงทะเบียนคำสั่ง:", error);
   }
 }
 
-client.once('ready', async () => {
-  console.log(`🎙️ บอท jookCast พร้อมออนไลน์ทำงานแล้วในชื่อ: ${client.user?.tag}`);
+client.once("ready", async () => {
+  console.log(
+    `🎙️ บอท jookCast พร้อมออนไลน์ทำงานแล้วในชื่อ: ${client.user?.tag}`,
+  );
   if (client.user?.id) {
     await registerSlashCommands(client.user.id);
   }
 });
 
-// ==========================================
-// 7. จัดการคำสั่งต่างๆ (Interactions)
-// ==========================================
-client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
+// ─── HANDLERS ───────────────────────────────────────────────────────────────
 
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
   const { commandName } = interaction;
 
-  // 🎵 คำสั่ง /add
-  if (commandName === 'add') {
-    const url = interaction.options.getString('url', true).trim();
+  // 🎵 /add
+  if (commandName === "add") {
+    const url = interaction.options.getString("url", true).trim();
     const videoId = extractVideoId(url);
-
-    if (!videoId) {
-      await interaction.reply({ content: '❌ รูปแบบลิงก์ YouTube ไม่ถูกต้องครับ', ephemeral: true });
-      return;
-    }
+    if (!videoId)
+      return interaction.reply({
+        content: "❌ ลิงก์ YouTube ไม่ถูกต้องครับ",
+        ephemeral: true,
+      });
 
     await interaction.deferReply();
-
     try {
-      const songTitle = await addSongToPlaylist(videoId);
-      await interaction.editReply(`🎉 หยอดเพลงลงตู้คิว jookCast สำเร็จแล้ว!\n🎵 **ชื่อเพลง:** ${songTitle}`);
+      const snippet = await addSongToPlaylist(videoId);
+      await interaction.editReply(
+        `🎉 หยอดเพลงลงตู้คิว jookCast สำเร็จแล้ว!\n🎵 **ชื่อเพลง:** ${snippet?.title}`,
+      );
     } catch (error: any) {
-      console.error(error);
-      await interaction.editReply(`❌ ล้มเหลว: ${error.message || 'เกิดข้อผิดพลาดในการคาสต์เพลง'}`);
+      await interaction.editReply(`❌ ล้มเหลว: ${error.message}`);
     }
   }
 
-  // 🔐 คำสั่ง /setup_host
-  if (commandName === 'setup_host') {
+  // 📋 /queue
+  if (commandName === "queue") {
+    await interaction.deferReply();
+    try {
+      const songs = await getPlaylistSongs(10);
+      if (songs.length === 0)
+        return interaction.editReply(
+          "📭 ตอนนี้ตู้เพลงว่างเปล่าจ้า ไม่มีเพลงในคิวเลย ใช้ `/add` มาหยอดสิ!",
+        );
+
+      let queueText = songs
+        .map((song, index) => `${index + 1}. **${song.snippet?.title}**`)
+        .join("\n");
+      const embed = new EmbedBuilder()
+        .setTitle("📋 คิวเพลงปัจจุบันใน jookCast")
+        .setDescription(queueText)
+        .setColor("#9b5de5")
+        .setFooter({ text: `แสดงทั้งหมด ${songs.length} เพลงล่าสุด` });
+
+      await interaction.editReply({ embeds: [embed] });
+    } catch (error: any) {
+      await interaction.editReply(`❌ เกิดข้อผิดพลาด: ${error.message}`);
+    }
+  }
+
+  // 🎧 /nowplaying
+  if (commandName === "nowplaying") {
+    await interaction.deferReply();
+    try {
+      const songs = await getPlaylistSongs(1);
+      if (songs.length === 0)
+        return interaction.editReply(
+          "🔇 ตอนนี้ไม่มีเพลงใดๆ กำลังออนแอร์อยู่ครับ",
+        );
+
+      const current = songs[0]?.snippet;
+      const embed = new EmbedBuilder()
+        .setTitle("📻 กำลังออนแอร์ / คิวถัดไป")
+        .setDescription(
+          `🎵 **${current?.title}**\n\n📺 ช่อง: *${current?.videoOwnerChannelTitle || "Unknown"}*`,
+        )
+        .setThumbnail(
+          current?.thumbnails?.high?.url ||
+            current?.thumbnails?.default?.url ||
+            null,
+        )
+        .setColor("#00f5d4");
+
+      await interaction.editReply({ embeds: [embed] });
+    } catch (error: any) {
+      await interaction.editReply(`❌ เกิดข้อผิดพลาด: ${error.message}`);
+    }
+  }
+
+  // 🗳️ /voteskip
+  if (commandName === "voteskip") {
+    await interaction.deferReply();
+    try {
+      const songs = await getPlaylistSongs(1);
+      if (songs.length === 0)
+        return interaction.editReply("❌ ไม่มีเพลงให้ข้ามจ้า ตู้เพลงว่างอยู่");
+
+      const userId = interaction.user.id;
+      if (voteSkipUsers.has(userId)) {
+        return interaction.editReply(
+          `⚠️ คุณเคยโหวตข้ามเพลงนี้ไปแล้ว! (${voteSkipUsers.size}/${REQUIRED_VOTES})`,
+        );
+      }
+
+      voteSkipUsers.add(userId);
+
+      if (voteSkipUsers.size >= REQUIRED_VOTES) {
+        await removeSongFromPlaylist(songs[0]?.id!);
+        voteSkipUsers.clear(); // รีเซ็ตผลโหวตสำหรับเพลงถัดไป
+        await interaction.editReply(
+          `⏭️ **คะแนนเสียงครบถ้วน!** ดีดเพลงเก่าหัวคิวออกให้แล้ว หน้าจอจะแคสต์ไปเพลงถัดไปอัตโนมัติครับ!`,
+        );
+      } else {
+        await interaction.editReply(
+          `🗳️ มีคนอยากข้ามเพิ่มอีก 1 เสียง! (**${voteSkipUsers.size}/${REQUIRED_VOTES}** คนต้องการข้ามเพลงนี้)`,
+        );
+      }
+    } catch (error: any) {
+      await interaction.editReply(`❌ โหวตข้ามล้มเหลว: ${error.message}`);
+    }
+  }
+
+  // 🎲 /lucky
+  if (commandName === "lucky") {
+    await interaction.deferReply();
+    const funSongs = [
+      "https://www.youtube.com/watch?v=dQw4w9WgXcQ", // Rickroll
+      "https://www.youtube.com/watch?v=kJQP7kiw5Fk", // Despacito
+      "https://www.youtube.com/watch?v=9bZkp7q19f0", // PSY - GANGNAM STYLE
+    ];
+    const randomSong = funSongs[Math.floor(Math.random() * funSongs.length)]!;
+    const videoId = extractVideoId(randomSong);
+
+    if (!videoId) {
+      return interaction.editReply("❌ เกิดข้อผิดพลาดในระบบสุ่มลิงก์เพลง");
+    }
+    try {
+      const snippet = await addSongToPlaylist(videoId);
+      voteSkipUsers.clear(); // เพลงใหม่เข้า เคลียร์โหวตสคิปอันเก่า
+      await interaction.editReply(
+        `🎲 **ตู้เพลงสุ่มนำโชคระเบิด!** หยอดเพลงพิเศษเข้าตู้ให้แล้ว:\n🎵 **ชื่อเพลง:** ${snippet?.title}`,
+      );
+    } catch (error: any) {
+      await interaction.editReply(`❌ สุ่มเพลงล้มเหลว: ${error.message}`);
+    }
+  }
+
+  // ✂️ /remove [Admin]
+  if (commandName === "remove") {
+    await interaction.deferReply({ ephemeral: true });
+    const index = interaction.options.getInteger("index", true);
+    try {
+      const songs = await getPlaylistSongs(20);
+      if (index < 1 || index > songs.length)
+        return interaction.editReply(
+          `❌ ระบุลำดับไม่ถูกต้อง มีเพลงในคิวให้เลือกแค่ 1-${songs.length}`,
+        );
+
+      const targetSong = songs[index - 1];
+      await removeSongFromPlaylist(targetSong?.id!);
+      await interaction.editReply(
+        `🗑️ ดีดเพลงลำดับที่ ${index}: **${targetSong?.snippet?.title}** ออกจากคิวเรียบร้อยครับ`,
+      );
+    } catch (error: any) {
+      await interaction.editReply(`❌ ลบเพลงล้มเหลว: ${error.message}`);
+    }
+  }
+
+  // 🧹 /clear_queue [Admin]
+  if (commandName === "clear_queue") {
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      let songs = await getPlaylistSongs(50);
+      if (songs.length === 0)
+        return interaction.editReply("ตู้เพลงว่างสะอาดอยู่แล้วจ้า");
+
+      while (songs.length > 0) {
+        for (const song of songs) {
+          await removeSongFromPlaylist(song.id!);
+        }
+        songs = await getPlaylistSongs(50); // ดึงเช็คเผื่อมีตกค้าง
+      }
+      voteSkipUsers.clear();
+      await interaction.editReply(
+        "🧹 **กวาดล้างตู้สำเร็จ!** เคลียร์เพลงทั้งหมดออกจาก Playlist เรียบร้อยแล้วครับ",
+      );
+    } catch (error: any) {
+      await interaction.editReply(`❌ ล้างตู้ล้มเหลว: ${error.message}`);
+    }
+  }
+
+  // 📊 /jookcast_status [Admin]
+  if (commandName === "jookcast_status") {
+    await interaction.deferReply({ ephemeral: true });
+    const config = loadConfig();
+    try {
+      const youtube = getYouTubeClient();
+      let totalSongs = 0;
+      if (config.playlistId) {
+        const res = await youtube.playlists.list({
+          part: ["contentDetails"],
+          id: [config.playlistId],
+        });
+        totalSongs = res.data.items?.[0]?.contentDetails?.itemCount || 0;
+      }
+
+      await interaction.editReply(
+        `📊 **สถานะระบบ jookCast คลาวด์**\n🟢 บอทสแตนด์บาย: 24 ชั่วโมง\n📂 ไอดีตู้เพลง: \`${config.playlistId || "ยังไม่มี"}\`\n🎵 มีเพลงในตู้ทั้งหมด: \`${totalSongs}\` เพลง`,
+      );
+    } catch (error: any) {
+      await interaction.editReply(`❌ ดึงสถานะล้มเหลว: ${error.message}`);
+    }
+  }
+
+  // 🔑 ระบบ SETUP บัญชีพื้นฐาน (/setup_host, /submit_code, /set_playlist, /create_playlist เหมือนเดิม)
+  if (commandName === "setup_host") {
     try {
       const oAuth2Client = getYouTubeOAuth2Client();
       const authUrl = oAuth2Client.generateAuthUrl({
-        access_type: 'offline',
+        access_type: "offline",
         scope: SCOPES,
-        prompt: 'consent'
+        prompt: "consent",
       });
-
       await interaction.reply({
-        content: `🔑 **ขั้นตอนการตั้งค่าบัญชี Host สำหรับ jookCast:**\n1. คลิกเข้าไปที่ลิงก์นี้เพื่อล็อกอินบัญชียูทูปของคุณ: [คลิกเพื่อล็อกอินสิทธิ์](${authUrl})\n2. เมื่อกดยอมรับแล้ว หน้าเว็บจะเด้งไปที่หน้าขาวๆ (localhost)\n3. ก๊อปปี้ URL บนเบราว์เซอร์ทั้งหมดมา แล้วใช้คำสั่ง \`/submit_code\` ในดิสคอร์ดเพื่อส่งรหัสเข้าสู่ระบบครับ!`,
-        ephemeral: true
+        content: `🔑 **ขั้นตอนการตั้งค่า Host สำหรับ jookCast:**\n1. ล็อกอินสิทธิ์: [คลิกที่นี่](${authUrl})\n2. นำหน้าเว็บขาวมาส่งต่อด้วยคำสั่ง \`/submit_code\``,
+        ephemeral: true,
       });
     } catch (error: any) {
-      await interaction.reply({ content: `❌ เกิดข้อผิดพลาด: ${error.message}`, ephemeral: true });
+      await interaction.reply({
+        content: `❌ เกิดข้อผิดพลาด: ${error.message}`,
+        ephemeral: true,
+      });
     }
   }
 
-  // 📥 คำสั่ง /submit_code
-  if (commandName === 'submit_code') {
+  if (commandName === "submit_code") {
     await interaction.deferReply({ ephemeral: true });
-    let input = interaction.options.getString('code_or_url', true).trim();
-    
-    let code = input;
-    if (input.includes('code=')) {
-      const urlObj = new URL(input);
-      code = urlObj.searchParams.get('code') ?? input;
-    }
-
+    let input = interaction.options.getString("code_or_url", true).trim();
+    let code = input.includes("code=")
+      ? (new URL(input).searchParams.get("code") ?? input)
+      : input;
     try {
       const oAuth2Client = getYouTubeOAuth2Client();
       const { tokens } = await oAuth2Client.getToken(code);
-      oAuth2Client.setCredentials(tokens);
-      
-      fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens, null, 2), 'utf8');
-      await interaction.editReply('🎉 **สำเร็จ!** เชื่อมต่อบัญชีเข้ากับระบบ jookCast Host เรียบร้อยแล้วครับ!');
+      fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens, null, 2), "utf8");
+      await interaction.editReply(
+        "🎉 **สำเร็จ!** เชื่อมต่อบัญชีเข้ากับระบบ jookCast Host เรียบร้อยแล้วครับ!",
+      );
     } catch (error: any) {
-      console.error(error);
-      await interaction.editReply('❌ รหัสยืนยันสิทธิ์ไม่ถูกต้อง หรือหมดอายุ กรุณากด `/setup_host` ใหม่ครับ');
+      await interaction.editReply(
+        "❌ รหัสหมดอายุ กรุณากด `/setup_host` ใหม่ครับ",
+      );
     }
   }
 
-  // 📂 คำสั่ง /set_playlist
-  if (commandName === 'set_playlist') {
-    const newPlaylistId = interaction.options.getString('playlist_id', true).trim();
+  if (commandName === "set_playlist") {
+    const newPlaylistId = interaction.options
+      .getString("playlist_id", true)
+      .trim();
     const config = loadConfig();
     config.playlistId = newPlaylistId;
     saveConfig(config);
-
-    await interaction.reply({ content: `✅ เปลี่ยนตู้เพลง jookCast ไปที่ Playlist ID: \`${newPlaylistId}\` สำเร็จแล้ว!`, ephemeral: true });
+    await interaction.reply({
+      content: `✅ เปลี่ยนตู้เพลง jookCast ไปที่ Playlist ID: \`${newPlaylistId}\` สำเร็จ!`,
+      ephemeral: true,
+    });
   }
 
-  // 🛠️ คำสั่ง /create_playlist
-  if (commandName === 'create_playlist') {
+  if (commandName === "create_playlist") {
     await interaction.deferReply({ ephemeral: true });
-    const playlistName = interaction.options.getString('name', true).trim();
-    const privacy = interaction.options.getString('privacy') ?? 'unlisted';
-
+    const playlistName = interaction.options.getString("name", true).trim();
+    const privacy = interaction.options.getString("privacy") ?? "unlisted";
     try {
       const generatedId = await createNewYouTubePlaylist(playlistName, privacy);
-      
-      if (!generatedId) throw new Error('ไม่ได้รับไอดีเพลย์ลิสต์กลับมาจาก YouTube');
-
+      if (!generatedId) throw new Error("ไม่ได้รับไอดีกลับมาจาก YouTube");
       const config = loadConfig();
       config.playlistId = generatedId;
       saveConfig(config);
-
-      await interaction.editReply(`✨ **สร้างคิวเพลง jookCast ใหม่สำเร็จเสร็จสรรพ!**\n📂 **ชื่อเพลย์ลิสต์:** \`${playlistName}\`\n🆔 **Playlist ID:** \`${generatedId}\`\n🔗 **ลิงก์เปิดบนทีวี/แท็บเล็ต:** https://www.youtube.com/playlist?list=${generatedId}\n\n*ระบบสลับตู้เพลงหลักมาใช้ตัวนี้ให้คุณอัตโนมัติแล้ว เริ่มรัน jookCast ได้ทันทีครับ!*`);
+      await interaction.editReply(
+        `✨ **สร้างคิวเพลง jookCast ใหม่สำเร็จ!**\n📂 **ชื่อ:** \`${playlistName}\`\n🆔 **ID:** \`${generatedId}\`\n🔗 **ลิงก์คาสต์ขึ้นจอ:** https://www.youtube.com/playlist?list=${generatedId}`,
+      );
     } catch (error: any) {
-      console.error(error);
-      await interaction.editReply(`❌ สร้างเพลย์ลิสต์ jookCast ล้มเหลว: ${error.response?.data?.error?.message || error.message}`);
+      await interaction.editReply(`❌ สร้างล้มเหลว: ${error.message}`);
     }
   }
 });
 
-if (!DISCORD_TOKEN) {
-  console.error('❌ ไม่พบ DISCORD_TOKEN ในไฟล์ .env');
-} else {
-  client.login(DISCORD_TOKEN);
-}
+// 🌐 หลอกสแกนพอร์ตของ Render กันโดนตัดสาย
+const PORT = process.env.PORT ?? "10000";
+http
+  .createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("jookCast is running and casting music! 🎙️🎵");
+  })
+  .listen(PORT, () => {
+    console.log(`🌐 สแตนด์บายพอร์ตจำลองที่ช่อง ${PORT}`);
+  });
+
+if (!DISCORD_TOKEN) console.error("❌ ไม่พบ DISCORD_TOKEN ใน .env");
+else client.login(DISCORD_TOKEN);
