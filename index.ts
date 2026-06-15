@@ -4,6 +4,15 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import http from 'http';
+const PORT = process.env.PORT ?? '10000';
+
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('jookCast is running and casting music! 🎙️🎵');
+}).listen(PORT, () => {
+  console.log(`🌐 หลอก Render สำเร็จ: เปิดพอร์ตสแตนด์บายที่ช่อง ${PORT} เรียบร้อย`);
+});
 
 dotenv.config();
 
