@@ -32,11 +32,9 @@ const CONFIG_PATH = path.join(__dirname, "config.json");
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const SCOPES = ["https://www.googleapis.com/auth/youtube"];
 
-// 🎵 ไอดีวิดีโอสำหรับใช้เป็นเพลงเปิดสถานีสแตนด์บายบนแท็บเล็ต
-const INTRO_VIDEO_ID = "kJQP7kiw5Fk";
-
-const BOT_VERSION = "v2.7.5";
-const RELEASE_NOTES = `✨ **มีอะไรใหม่ในเวอร์ชัน ${BOT_VERSION}**\n- 🤝 **Auto-Setup on Join:** เพิ่มระบบตื่นตัวอัจฉริยะ ทันทีที่บอทถูกเชิญเข้าเซิร์ฟเวอร์ใหม่ จะทำการสร้างช่อง \`#jookcast-status\` และ \`#jookcast-feed\` พร้อมยิงคู่มือการใช้งานให้ทันทีอัตโนมัติหน้างานโดยไม่ต้องรีสตาร์ทบอทหลังบ้านครับ!`;
+// 🎵 ค่าสแตนด์บายหลักเปลี่ยนมาใช้ดึงจากหมวด Trending แทนแล้ว
+const BOT_VERSION = "v3.0.0-Hybrid";
+const RELEASE_NOTES = `✨ **มีอะไรใหม่ในเวอร์ชัน ${BOT_VERSION}**\n- 🔥 **Trending Standby Loop:** ปรับปรุงระบบคั้นเวลา! เมื่อคิวหลักหมด บอทจะทำการดึง **เพลงฮิตติดเทรนด์ 5 เพลง** มาใส่ตู้คิวให้อัตโนมัติ และจะทำการ **เตะเพลงฮิตทิ้งทันทีที่มีคนแอดเพลงใหม่** เพื่อนำเพลงของ User ไปต่อท้ายเพลงที่กำลังเล่นอยู่ปัจจุบันแบบไร้รอยต่อครับ!`;
 
 let voteSkipUsers = new Set<string>();
 const REQUIRED_VOTES = 3;
@@ -69,39 +67,28 @@ const client = new Client({
 });
 
 function getYouTubeOAuth2Client() {
-  // 1. ตรวจสอบว่าพี่ใส่ค่าไว้ใน Environment Variables ของ Render หรือไม่
   if (process.env.YOUTUBE_CLIENT_ID && process.env.YOUTUBE_CLIENT_SECRET) {
     const clientId = process.env.YOUTUBE_CLIENT_ID;
     const clientSecret = process.env.YOUTUBE_CLIENT_SECRET;
     const redirectUri = process.env.RENDER_EXTERNAL_URL
       ? `${process.env.RENDER_EXTERNAL_URL}/api/callback`
-      : (process.env.YOUTUBE_REDIRECT_URI ??
-        "http://localhost:10000/api/callback");
+      : (process.env.YOUTUBE_REDIRECT_URI ?? "http://localhost:10000/api/callback");
 
     return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
   }
 
-  // 2. อ่านจากไฟล์ credentials.json (รองรับทั้ง Web App และ Desktop App)
   if (!fs.existsSync(CREDENTIALS_PATH)) {
-    throw new Error(
-      "ไม่พบข้อมูลแอปใน Environment และไม่พบไฟล์ credentials.json กรุณาตั้งค่าก่อนใช้งาน",
-    );
+    throw new Error("ไม่พบข้อมูลแอปใน Environment และไม่พบไฟล์ credentials.json กรุณาตั้งค่าก่อนใช้งาน");
   }
 
   const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, "utf8"));
-
-  // ✨ จุดแก้ตายตัว: ถ้าดึงจาก Web app ให้ใช้ credentials.web ถ้าดึงจาก Desktop ให้ใช้ credentials.installed
   const target = credentials.web || credentials.installed;
 
   if (!target) {
-    throw new Error(
-      "โครงสร้างไฟล์ credentials.json ไม่ถูกต้อง ไม่พบหัวข้อ web หรือ installed",
-    );
+    throw new Error("โครงสร้างไฟล์ credentials.json ไม่ถูกต้อง ไม่พบหัวข้อ web หรือ installed");
   }
 
-  // ดึง Redirect URI ตัวแรกจากในไฟล์มาใช้
-  const redirectUri =
-    target.redirect_uris?.[0] ?? "http://localhost:10000/api/callback";
+  const redirectUri = target.redirect_uris?.[0] ?? "http://localhost:10000/api/callback";
 
   return new google.auth.OAuth2(
     target.client_id,
@@ -112,9 +99,7 @@ function getYouTubeOAuth2Client() {
 
 function getYouTubeClient() {
   if (!fs.existsSync(TOKEN_PATH)) {
-    throw new Error(
-      "บอทยังไม่ได้ล็อกอินบัญชี YouTube Host กรุณาใช้คำสั่ง \`/setup_host\` เพื่อผูกบัญชีผ่านหน้าเว็บ",
-    );
+    throw new Error("บอทยังไม่ได้ล็อกอินบัญชี YouTube Host กรุณาใช้คำสั่ง \`/setup_host\` เพื่อผูกบัญชีผ่านหน้าเว็บ");
   }
   const oAuth2Client = getYouTubeOAuth2Client();
   const token = JSON.parse(fs.readFileSync(TOKEN_PATH, "utf8"));
@@ -123,8 +108,7 @@ function getYouTubeClient() {
 }
 
 function extractVideoId(url: string): string | null {
-  const regExp =
-    /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+  const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
   const match = url.match(regExp);
   const videoId = match?.[2];
   return videoId && videoId.length === 11 ? videoId : null;
@@ -132,16 +116,16 @@ function extractVideoId(url: string): string | null {
 
 // ─── YOUTUBE API FUNCTIONS ──────────────────────────────────────────────────
 
-async function addSongToPlaylist(videoId: string) {
+async function addSongToPlaylist(videoId: string, description: string = "jookcast-user-song") {
   const config = loadConfig();
-  if (!config.playlistId)
-    throw new Error("ยังไม่ได้ตั้งค่าไอดี Playlist ปลายทาง");
+  if (!config.playlistId) throw new Error("ยังไม่ได้ตั้งค่าไอดี Playlist ปลายทาง");
   const youtube = getYouTubeClient();
   const response = await youtube.playlistItems.insert({
     part: ["snippet"],
     requestBody: {
       snippet: {
         playlistId: config.playlistId,
+        description: description, // ใช้เก็บสัญลักษณ์เพื่อแยกแยะประเภทเพลง
         resourceId: { kind: "youtube#video", videoId: videoId },
       },
     },
@@ -192,7 +176,25 @@ async function searchYouTubeFiveVideos(keyword: string) {
   return response.data.items || [];
 }
 
-// ✨ ฟังก์ชันสำหรับกวาดล้างเพลงเก่าที่เล่นจบแล้วทิ้ง เพื่อป้องกันไม่ให้เพลย์ลิสต์ยาวสะสมจนกลับมาเล่นวนซ้ำ
+// ✨ ฟังก์ชันดึงเพลงฮิตติดเทรนด์ 5 เพลงล่าสุดในไทย หมวดดนตรี
+async function getTopTrendingSongs(): Promise<string[]> {
+  try {
+    const youtube = getYouTubeClient();
+    const response = await youtube.videos.list({
+      part: ["id", "snippet"],
+      chart: "mostPopular",
+      regionCode: "TH",
+      videoCategoryId: "10", // Category: Music
+      maxResults: 5
+    });
+    return response.data.items?.map(item => item.id as string) || [];
+  } catch (error) {
+    console.error("⚠️ ไม่สามารถดึงเพลงเทรนด์ฮิตได้ ปัดกลับไปใช้เพลงพื้นฐาน:", error);
+    return ["kJQP7kiw5Fk"]; // Fallback เพลง Intro เดิมกรณีระบบมีปัญหา
+  }
+}
+
+// ✨ ล้างเพลงเก่าที่เล่นจบแล้วทิ้ง
 async function autoCleanOldSongs() {
   try {
     const config = loadConfig();
@@ -206,15 +208,12 @@ async function autoCleanOldSongs() {
     });
 
     const songs = response.data.items || [];
-
-    // ถ้ารวมทั้งหมดในตู้มีเกิน 5 เพลง ให้แอบลบเพลงแรกสุด (ที่เล่นเสร็จแล้ว) ทิ้งทีละเพลง
+    // ถ้ารวมทั้งหมดในตู้มีเกิน 5 เพลง ให้แอบลบเพลงแรกสุดทิ้ง
     if (songs.length > 5) {
       const oldestSongId = songs[0]?.id;
       if (oldestSongId) {
         await removeSongFromPlaylist(oldestSongId);
-        console.log(
-          `🧹 [Auto-Clean] ลบเพลงเก่าที่เล่นจบแล้วออก: ${songs[0]?.snippet?.title}`,
-        );
+        console.log(`🧹 [Auto-Clean] ลบเพลงเก่าที่เล่นจบแล้วออก: ${songs[0]?.snippet?.title}`);
       }
     }
   } catch (error) {
@@ -222,91 +221,86 @@ async function autoCleanOldSongs() {
   }
 }
 
-// ✨ ฟังก์ชันสำหรับสลับคิว (เวอร์ชันเคลียร์ Type สยบ exactOptionalPropertyTypes ขาด 100%)
-async function moveNewSongBeforeIntro() {
-  try {
-    const config = loadConfig();
-    if (!config.playlistId) return;
+// ✨ ตรรกะใหม่: เมื่อมีคนแอดเพลง ให้ลบเพลงฮิตออโต้ (Standby) ออกทั้งหมดทันที แล้วเอาเพลงใหม่ต่อท้ายเพลงแรก
+async function cleanStandbyAndAppendNewSong(newVideoId: string) {
+  const config = loadConfig();
+  if (!config.playlistId) return null;
 
-    const youtube = getYouTubeClient();
-    const response = await youtube.playlistItems.list({
-      part: ["id", "snippet"],
-      playlistId: config.playlistId,
-      maxResults: 20,
-    });
+  const songs = await getPlaylistSongs(25);
+  if (songs.length === 0) {
+    return await addSongToPlaylist(newVideoId, "jookcast-user-song");
+  }
 
-    const songs = response.data.items || [];
-    if (songs.length < 2) return;
-
-    const latestSongIndex = songs.length - 1;
-    const latestSong = songs[latestSongIndex];
-
-    const beforeLatestSong = songs[latestSongIndex - 1];
-    const beforeLatestVideoId = beforeLatestSong?.snippet?.resourceId?.videoId;
-
-    // ถ้าเพลงก่อนหน้าคือเพลงสแตนด์บาย และเพลงใหม่ไม่ใช่เพลงสแตนด์บาย ให้สลับคิวทันที
-    if (
-      beforeLatestVideoId === INTRO_VIDEO_ID &&
-      latestSong?.snippet?.resourceId?.videoId !== INTRO_VIDEO_ID
-    ) {
-      // 💡 1. ตรวจสอบก่อนว่ามีข้อมูลครบไหม ถ้าไม่มีให้โยนออกไปก่อน ป้องกัน Type หลุด
-      if (
-        !latestSong?.id ||
-        !latestSong?.snippet?.title ||
-        !latestSong?.snippet?.resourceId?.videoId
-      ) {
-        console.log("⚠️ [Reorder] ข้อมูลเพลงใหม่ไม่ครบถ้วน ข้ามการสลับคิว");
-        return;
+  const currentPlayingSong = songs[0]; // เก็บเพลงลำดับที่ 1 (ที่กำลังออนแอร์) ไว้
+  
+  // ค้นหาและลบเพลงที่เป็น "jookcast-trending-standby" ทั้งหมดออกทันที
+  for (const song of songs) {
+    if (song.id && song.snippet?.description === "jookcast-trending-standby") {
+      try {
+        await removeSongFromPlaylist(song.id);
+        console.log(`🗑️ [Hybrid-System] เตะเพลงฮิตคั่นเวลาออกอัตโนมัติ: ${song.snippet?.title}`);
+      } catch (err) {
+        console.error("⚠️ ไม่สามารถลบเพลงสแตนด์บายได้:", err);
       }
+    }
+  }
 
-      // 💡 2. ปั้นโครงสร้างแบบกำหนด Type ตายตัว ไม่มีการใช้ || undefined ให้คอมไพเลอร์บ่น
+  // แอดเพลงใหม่ของ User เข้าตู้หลัก
+  const newSongSnippet = await addSongToPlaylist(newVideoId, "jookcast-user-song");
+
+  // รีเฟรชคิวตรวจสอบอีกครั้งเพื่อทำการดันเพลงผู้ใช้ขึ้นเป็นเพลงลำดับถัดไป (ต่อจากเพลงที่เล่นอยู่)
+  const updatedSongs = await getPlaylistSongs(10);
+  if (updatedSongs.length >= 2 && currentPlayingSong?.id) {
+    const targetIndex = updatedSongs.findIndex(s => s.snippet?.resourceId?.videoId === newVideoId);
+    if (targetIndex > 1 && updatedSongs[targetIndex]?.id && updatedSongs[targetIndex]?.snippet?.title) {
+      const targetSong = updatedSongs[targetIndex];
+      
       const updateRequestBody = {
-        id: latestSong.id,
+        id: targetSong.id!,
         snippet: {
           playlistId: config.playlistId,
-          title: latestSong.snippet.title,
-          position: latestSongIndex - 1,
+          title: targetSong.snippet!.title!,
+          position: 1, // บังคับให้อยู่ลำดับที่ 2 ต่อจากเพลงแรกที่กำลังเล่นอยู่
           resourceId: {
-            kind: latestSong.snippet.resourceId.kind || "youtube#video",
-            videoId: latestSong.snippet.resourceId.videoId,
+            kind: targetSong.snippet!.resourceId!.kind || "youtube#video",
+            videoId: targetSong.snippet!.resourceId!.videoId!,
           },
         },
       };
 
-      // 💡 3. ส่งออบเจกต์ที่ Type เคลียร์สะอาดให้ YouTube API
+      const youtube = getYouTubeClient();
       await youtube.playlistItems.update({
         part: ["snippet"],
         requestBody: updateRequestBody,
       });
-
-      console.log(
-        `🔀 [Reorder] สลับคิวเรียบร้อย ย้าย "${latestSong?.snippet.title}" ขึ้นมาก่อนเพลงสแตนด์บาย`,
-      );
+      console.log(`🔀 [Hybrid-System] นำเพลงใหม่ของ User เสียบต่อท้ายเพลงปัจจุบันแทนกลุ่มเพลงฮิตเรียบร้อย!`);
     }
-  } catch (error) {
-    console.error("⚠️ Reorder Error:", error);
   }
+
+  return newSongSnippet;
 }
 
-// ✨ ปรับปรุงให้เติมเฉพาะเพลงสแตนด์บายคั่นเวลาเมื่อคิวเพลงหลักหมด
+// ✨ ตรรกะออโต้คิวคั่นเวลาเวอร์ชันใหม่ ดึงเพลงยอดฮิต 5 เพลงมาใส่แทนเมื่อคิวเพลงกำลังจะหมด
 async function checkAndAutoFillQueue(): Promise<string[]> {
   try {
-    await autoCleanOldSongs(); // เคลียร์ของเก่าทิ้งก่อนตรวจสอบเสมอ
+    await autoCleanOldSongs();
 
     const config = loadConfig();
     if (!config.playlistId) return [];
 
     const songs = await getPlaylistSongs(5);
 
-    // ถ้าคิวเพลงเหลือตัวเดียว (กำลังเล่นเพลงสุดท้ายอยู่) ให้เติมเพลงสแตนด์บายพยุงคิวไว้ทันทีไม่ให้จอหลุด
+    // ถ้าคิวเพลงเหลือตัวเดียว (กำลังเล่นเพลงสุดท้ายอยู่) ลุยดึงเทรนด์ฮิตของไทย 5 เพลงยัดใส่ตู้ทันที
     if (songs.length <= 1) {
-      const snippet = await addSongToPlaylist(INTRO_VIDEO_ID);
-      if (snippet?.title) {
-        console.log(
-          `🤖 [Standby-Fill] เติมเพลงเปิดสถานีคั่นเวลา: ${snippet?.title}`,
-        );
-        return [snippet?.title];
+      console.log("🎵 [Standby-Fill] ตรวจพบการหมดคิว กำลังดึงเพลงฮิตอันดับต้นๆ 5 เพลงมาประคองสถานี...");
+      const trendingVideoIds = await getTopTrendingSongs();
+      const loadedTitles: string[] = [];
+
+      for (const videoId of trendingVideoIds) {
+        const snippet = await addSongToPlaylist(videoId, "jookcast-trending-standby");
+        if (snippet?.title) loadedTitles.push(snippet.title);
       }
+      return loadedTitles;
     }
   } catch (error) {
     console.error("⚠️ Standby-Fill Error:", error);
@@ -314,7 +308,7 @@ async function checkAndAutoFillQueue(): Promise<string[]> {
   return [];
 }
 
-// ─── ระบบฟังก์ชันตั้งค่าช่องสัญญาณ (สร้างโมดูลย่อยให้เรียกซ้ำแยกตามกิลด์ได้) ───
+// ─── ระบบฟังก์ชันตั้งค่าช่องสัญญาณ ───
 
 async function setupSingleGuildChannels(guild: Guild) {
   const STATUS_CHANNEL = "jookcast-status";
@@ -368,37 +362,14 @@ async function setupSingleGuildChannels(guild: Guild) {
     if (!hasWelcomeMessage) {
       const welcomeEmbed = new EmbedBuilder()
         .setTitle("🎙️ ตู้เพลงคลาวด์ jookCast - คู่มือการใช้งาน")
-        .setDescription(
-          "ระบบฝากส่งเพลงจาก Discord ไปเล่นบนหน้าจอหลักผ่านคลัง YouTube Playlist แบบเรียลไทม์!",
-        )
+        .setDescription("ระบบฝากส่งเพลงจาก Discord ไปเล่นบนหน้าจอหลักผ่านคลัง YouTube Playlist แบบเรียลไทม์!")
         .setColor("#00f5d4")
         .addFields(
-          {
-            name: "🔍 ค้นหาเพลงอย่างเซียน",
-            value:
-              "`/search [ชื่อเพลง/ศิลปิน]` บอทจะแสดงเมนูให้เลือกเพลง (เห็นแค่คุณคนเดียว แชทไม่รก)",
-            inline: false,
-          },
-          {
-            name: "🔗 หยอดเพลงตรงด้วยลิงก์",
-            value: "`/add [ลิงก์ YouTube]` แอดเข้าคิวตู้เพลงหลักทันที",
-            inline: false,
-          },
-          {
-            name: "📋 ตรวจสอบคิวเพลง",
-            value: "`/queue` เช็คดูรายชื่อ 10 เพลงถัดไปในตู้",
-            inline: true,
-          },
-          {
-            name: "📻 ดูเพลงปัจจุบัน",
-            value: "`/nowplaying` ดูเพลงที่กำลังออนแอร์",
-            inline: true,
-          },
-          {
-            name: "🗳️ โหวตข้ามเพลงกร่อย",
-            value: "`/voteskip` ร่วมใจกันกดครบ 3 คน ดีดเพลงหัวคิวทิ้งทันที!",
-            inline: false,
-          },
+          { name: "🔍 ค้นหาเพลงอย่างเซียน", value: "`/search [ชื่อเพลง/ศิลปิน]` บอทจะแสดงเมนูให้เลือกเพลง (เห็นแค่คุณคนเดียว แชทไม่รก)", inline: false },
+          { name: "🔗 หยอดเพลงตรงด้วยลิงก์", value: "`/add [ลิงก์ YouTube]` แอดเข้าคิวตู้เพลงหลักทันที", inline: false },
+          { name: "📋 ตรวจสอบคิวเพลง", value: "`/queue` เช็คดูรายชื่อเพลงในตู้ทั้งหมด", inline: true },
+          { name: "📻 ดูเพลงปัจจุบัน", value: "`/nowplaying` ดูเพลงที่กำลังออนแอร์", inline: true },
+          { name: "🗳️ โหวตข้ามเพลงกร่อย", value: "`/voteskip` ร่วมใจกันกดครบ 3 คน ดีดเพลงหัวคิวทิ้งทันที!", inline: false },
         )
         .setFooter({ text: "jookCast Station" });
 
@@ -420,9 +391,7 @@ async function setupSingleGuildChannels(guild: Guild) {
 
     console.log(`✅ ตั้งค่าระบบช่องสัญญาณเรียบร้อยสำหรับกิลด์: ${guild.name}`);
   } catch (err) {
-    console.error(
-      `⚠️ ไม่สามารถตั้งค่าแชนเนลระบบในกิลด์ ${guild.name} ได้ (อาจจะขาดสิทธิ์การจัดการแชนเนล)`,
-    );
+    console.error(`⚠️ ไม่สามารถตั้งค่าแชนเนลระบบในกิลด์ ${guild.name} ได้`);
   }
 }
 
@@ -437,62 +406,33 @@ async function setupAllGuildsChannels(client: Client) {
 const commands = [
   new SlashCommandBuilder()
     .setName("add")
-    .setDescription(
-      "หยอดเพลงด้วยลิงก์ลงตู้คิว jookCast (ข้อความจะไปแจ้งเตือนเงียบๆ ที่ช่องฟีด)",
-    )
-    .addStringOption((opt) =>
-      opt.setName("url").setDescription("ลิงก์เพลง YouTube").setRequired(true),
-    ),
+    .setDescription("หยอดเพลงด้วยลิงก์ลงตู้คิว jookCast (ระบบ Hybrid ล้างคิวเพลงสแตนด์บายให้อัตโนมัติ)")
+    .addStringOption((opt) => opt.setName("url").setDescription("ลิงก์เพลง YouTube").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("search")
     .setDescription("ค้นหาเพลงแล้วกดเลือกเข้าตู้คิว jookCast (เห็นเฉพาะคุณ)")
-    .addStringOption((opt) =>
-      opt
-        .setName("keyword")
-        .setDescription("พิมพ์ชื่อเพลง หรือชื่อศิลปิน")
-        .setRequired(true),
-    ),
+    .addStringOption((opt) => opt.setName("keyword").setDescription("พิมพ์ชื่อเพลง หรือชื่อศิลปิน").setRequired(true)),
 
-  new SlashCommandBuilder()
-    .setName("queue")
-    .setDescription("ดูรายชื่อเพลงคิวปัจจุบันใน jookCast"),
-  new SlashCommandBuilder()
-    .setName("nowplaying")
-    .setDescription("ดูเพลงที่กำลังออนแอร์ / คิวล่าสุด"),
-  new SlashCommandBuilder()
-    .setName("voteskip")
-    .setDescription("ร่วมโหวตข้ามเพลงกร่อยที่อยู่หัวคิวปัจจุบัน"),
+  new SlashCommandBuilder().setName("queue").setDescription("ดูรายชื่อเพลงคิวปัจจุบันใน jookCast"),
+  new SlashCommandBuilder().setName("nowplaying").setDescription("ดูเพลงที่กำลังออนแอร์ / คิวล่าสุด"),
+  new SlashCommandBuilder().setName("voteskip").setDescription("ร่วมโหวตข้ามเพลงกร่อยที่อยู่หัวคิวปัจจุบัน"),
 
   new SlashCommandBuilder()
     .setName("setup_host")
-    .setDescription(
-      "[Admin Only] ขอลิงก์ล็อกอินยืนยันสิทธิ์สำหรับ Host และซิงค์ออโต้",
-    )
+    .setDescription("[Admin Only] ขอลิงก์ล็อกอินยืนยันสิทธิ์สำหรับ Host และซิงค์ออโต้")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   new SlashCommandBuilder()
     .setName("set_playlist")
     .setDescription("[Admin Only] เปลี่ยนไอดี YouTube Playlist ปลายทาง")
-    .addStringOption((opt) =>
-      opt
-        .setName("playlist_id")
-        .setDescription("ใส่ YouTube Playlist ID")
-        .setRequired(true),
-    )
+    .addStringOption((opt) => opt.setName("playlist_id").setDescription("ใส่ YouTube Playlist ID").setRequired(true))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   new SlashCommandBuilder()
     .setName("create_playlist")
-    .setDescription(
-      "[Admin Only] สั่งสร้าง YouTube Playlist ใหม่เอี่ยมพร้อมฝังเพลง Intro",
-    )
-    .addStringOption((opt) =>
-      opt
-        .setName("name")
-        .setDescription("ตั้งชื่อเพลย์ลิสต์")
-        .setRequired(true),
-    )
+    .setDescription("[Admin Only] สั่งสร้าง YouTube Playlist ใหม่เอี่ยมพร้อมฝังเพลงคั่นเวลาอัจฉริยะ")
+    .addStringOption((opt) => opt.setName("name").setDescription("ตั้งชื่อเพลย์ลิสต์").setRequired(true))
     .addStringOption((opt) =>
       opt
         .setName("privacy")
@@ -509,9 +449,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName("remove")
     .setDescription("[Admin Only] ลบเพลงออกจากคิวตามลำดับตัวเลข")
-    .addIntegerOption((opt) =>
-      opt.setName("index").setDescription("ลำดับเพลงในคิว").setRequired(true),
-    )
+    .addIntegerOption((opt) => opt.setName("index").setDescription("ลำดับเพลงในคิว").setRequired(true))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   new SlashCommandBuilder()
@@ -536,7 +474,6 @@ client.once("ready", async () => {
         body: commands,
       });
       console.log("✅ ลงทะเบียนคำสั่ง Slash Commands ใหม่เรียบร้อย");
-
       await setupAllGuildsChannels(client);
     } catch (err) {
       console.error("❌ ข้อผิดพลาดในขั้นตอนเปิดระบบแรดดี้:", err);
@@ -545,9 +482,7 @@ client.once("ready", async () => {
 });
 
 client.on("guildCreate", async (guild) => {
-  console.log(
-    `📥 บอทถูกเชิญเข้าเซิร์ฟเวอร์ใหม่: ${guild.name} (ID: ${guild.id})`,
-  );
+  console.log(`📥 บอทถูกเชิญเข้าเซิร์ฟเวอร์ใหม่: ${guild.name} (ID: ${guild.id})`);
   await setupSingleGuildChannels(guild);
 });
 
@@ -563,10 +498,7 @@ client.on("interactionCreate", async (interaction) => {
 
       try {
         const videos = await searchYouTubeFiveVideos(keyword);
-        if (videos.length === 0)
-          return interaction.editReply(
-            `❌ ไม่พบผลลัพธ์สำหรับคำว่า: \`${keyword}\``,
-          );
+        if (videos.length === 0) return interaction.editReply(`❌ 不พบผลลัพธ์สำหรับคำว่า: \`${keyword}\``);
 
         const selectMenu = new StringSelectMenuBuilder()
           .setCustomId("search-select")
@@ -587,12 +519,9 @@ client.on("interactionCreate", async (interaction) => {
           }
         });
 
-        const row =
-          new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
-            selectMenu,
-          );
+        const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
         await interaction.editReply({
-          content: `🔍 **ผลลัพธ์การค้นหาสำหรับ:** \`${keyword}\`\n*(ข้อความเมนูนี้เห็นแค่คุณคนเดียว เลือกเสร็จแล้วระบบจะไปบันทึกเงียบๆ ที่ช่องฟีดครับ)*`,
+          content: `🔍 **ผลลัพธ์การค้นหาสำหรับ:** \`${keyword}\`\n*(ข้อความเมนูนี้เห็นแค่คุณคนเดียว เลือกเสร็จแล้วระบบจะจัดการล้างเพลงสแตนด์บายคั่นเวลาออกให้ออโต้ครับ)*`,
           components: [row],
         });
       } catch (error: any) {
@@ -603,31 +532,21 @@ client.on("interactionCreate", async (interaction) => {
     if (commandName === "add") {
       const url = interaction.options.getString("url", true).trim();
       const videoId = extractVideoId(url);
-      if (!videoId)
-        return interaction.reply({
-          content: "❌ ลิงก์ YouTube ไม่ถูกต้องครับ",
-          ephemeral: true,
-        });
+      if (!videoId) return interaction.reply({ content: "❌ ลิงก์ YouTube ไม่ถูกต้องครับ", ephemeral: true });
 
-      await interaction.reply({
-        content: "⏳ กำลังส่งเพลงเข้าตู้คิวหลักให้ครับ...",
-        ephemeral: true,
-      });
+      await interaction.reply({ content: "⏳ กำลังคัดกรองและแทรกสายเข้าคิวตู้เพลงหลักให้ครับ...", ephemeral: true });
 
       try {
-        const snippet = await addSongToPlaylist(videoId);
-        await moveNewSongBeforeIntro(); // ✨ สลับลำดับย้ายเพลงใหม่ขึ้นก่อนหน้าเพลง Intro สแตนด์บาย
+        // ✨ ใช้ฟังก์ชันล้างเพลงคั่นเวลาและยัดเพลงใหม่เสียบต่อท้ายเพลงปัจจุบัน
+        const snippet = await cleanStandbyAndAppendNewSong(videoId);
 
         let logMessage = `📥 **<@${interaction.user.id}>** ได้หยอดเพลงเข้าตู้หลักผ่านลิงก์:\n🎵 **ชื่อเพลง:** ${snippet?.title}\n🔗 ลิงก์: https://youtu.be/${videoId}`;
 
         voteSkipUsers.clear();
-        const autoFilled = await checkAndAutoFillQueue(); // ✨ ตรวจเช็คเพื่อเตรียมเติมเพลง Intro พยุงท้ายลิสต์
-        if (autoFilled.length > 0)
-          logMessage += `\n🤖 *[Standby-Fill]* คิวเพลงหมด บอทช่วยเติมเพลงสแตนด์บายคั่นเวลาให้แล้วครับ`;
+        const autoFilled = await checkAndAutoFillQueue();
+        if (autoFilled.length > 0) logMessage += `\n🤖 *[Standby-Fill]* คิวเพลงเกลี้ยงตู้ บอทช่วยสุ่มดึงเพลงฮิต 5 เพลงมาประคองคิวรอแล้วครับ`;
 
-        const feedChannel = interaction.guild?.channels.cache.find(
-          (ch) => ch.name === "jookcast-feed" && ch.isTextBased(),
-        ) as TextChannel;
+        const feedChannel = interaction.guild?.channels.cache.find((ch) => ch.name === "jookcast-feed" && ch.isTextBased()) as TextChannel;
         if (feedChannel) {
           await feedChannel.send({ content: logMessage, flags: [4096] });
         }
@@ -640,23 +559,22 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.deferReply();
       try {
         const autoFilled = await checkAndAutoFillQueue();
-        const songs = await getPlaylistSongs(10);
-        if (songs.length === 0)
-          return interaction.editReply(
-            "📭 ตู้เพลงว่างเปล่าจ้า พิมพ์ \`/search\` มาเปิดเพลงสิ!",
-          );
+        const songs = await getPlaylistSongs(15);
+        if (songs.length === 0) return interaction.editReply("📭 ตู้เพลงว่างเปล่าจ้า พิมพ์ \`/search\` มาเปิดเพลงสิ!");
 
         let text = songs
-          .map((s, i) => `${i + 1}. **${s.snippet?.title}**`)
+          .map((s, i) => {
+            const tag = s.snippet?.description === "jookcast-trending-standby" ? " *(🔥 เพลงฮิตคั่นเวลา)*" : "";
+            return `${i + 1}. **${s.snippet?.title}**${tag}`;
+          })
           .join("\n");
-        if (autoFilled.length > 0)
-          text += `\n\n🤖 *[Standby-Fill]* เติมเพลงเปิดสถานีสแตนด์บายพยุงท้ายคิวให้เรียบร้อย`;
+        if (autoFilled.length > 0) text += `\n\n🤖 *[Standby-Fill]* ระบบ Hybrid ปั๊มเพลงฮิตติดกระแสป้อนเพิ่มเข้าไปให้ 5 เพลงเรียบร้อยแล้ว`;
 
         const embed = new EmbedBuilder()
           .setTitle("📋 คิวเพลงปัจจุบันใน jookCast")
           .setDescription(text)
           .setColor("#9b5de5")
-          .setFooter({ text: `แสดงทั้งหมด ${songs.length} เพลงล่าสุด` });
+          .setFooter({ text: `แสดงทั้งหมด ${songs.length} เพลงล่าสุดในตู้` });
 
         await interaction.editReply({ embeds: [embed] });
       } catch (e: any) {
@@ -668,17 +586,12 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.deferReply();
       try {
         const songs = await getPlaylistSongs(1);
-        if (songs.length === 0)
-          return interaction.editReply("🔇 ไม่มีเพลงออนแอร์อยู่ครับ");
+        if (songs.length === 0) return interaction.editReply("🔇 ไม่มีเพลงออนแอร์อยู่ครับ");
         const cur = songs[0]?.snippet;
         const embed = new EmbedBuilder()
-          .setTitle("📻 กำลังออนแอร์ / คิวถัดไป")
-          .setDescription(
-            `🎵 **${cur?.title}**\n\n📺 ช่อง: *${cur?.videoOwnerChannelTitle || "Unknown"}*`,
-          )
-          .setThumbnail(
-            cur?.thumbnails?.high?.url || cur?.thumbnails?.default?.url || null,
-          )
+          .setTitle("📻 กำลังออนแอร์อยู่ ณ ตอนนี้")
+          .setDescription(`🎵 **${cur?.title}**\n\n📺 ช่อง: *${cur?.videoOwnerChannelTitle || "Unknown"}*\n📌 ประเภท: *${cur?.description === "jookcast-trending-standby" ? "เพลงฮิตสแตนด์บายออโต้" : "เพลงจากผู้ใช้แอดเข้ามา"}*`)
+          .setThumbnail(cur?.thumbnails?.high?.url || cur?.thumbnails?.default?.url || null)
           .setColor("#00f5d4");
         await interaction.editReply({ embeds: [embed] });
       } catch (e: any) {
@@ -690,27 +603,19 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.deferReply();
       try {
         const songs = await getPlaylistSongs(1);
-        if (songs.length === 0)
-          return interaction.editReply("❌ ไม่มีเพลงให้ข้ามจ้า");
+        if (songs.length === 0) return interaction.editReply("❌ ไม่มีเพลงให้ข้ามจ้า");
         const uId = interaction.user.id;
 
-        if (voteSkipUsers.has(uId))
-          return interaction.editReply(
-            `⚠️ คุณเคยโหวตเพลงนี้ไปแล้ว (${voteSkipUsers.size}/${REQUIRED_VOTES})`,
-          );
+        if (voteSkipUsers.has(uId)) return interaction.editReply(`⚠️ คุณเคยโหวตเพลงนี้ไปแล้ว (${voteSkipUsers.size}/${REQUIRED_VOTES})`);
         voteSkipUsers.add(uId);
 
         if (voteSkipUsers.size >= REQUIRED_VOTES) {
           await removeSongFromPlaylist(songs[0]?.id!);
           voteSkipUsers.clear();
           await checkAndAutoFillQueue();
-          await interaction.editReply(
-            `⏭️ **คะแนนเสียงครบ!** ข้ามเพลงเก่าให้เรียบร้อยแล้วจ้า!`,
-          );
+          await interaction.editReply(`⏭️ **คะแนนเสียงครบ!** สั่งสคิปดีดหัวคิวเพลงทิ้งให้เรียบร้อยแล้วจ้า!`);
         } else {
-          await interaction.editReply(
-            `🗳️ ต้องการคนโหวตเพิ่ม! (**${voteSkipUsers.size}/${REQUIRED_VOTES}**)`,
-          );
+          await interaction.editReply(`🗳️ ต้องการเสียงโหวตสนับสนุนเพิ่ม! (**${voteSkipUsers.size}/${REQUIRED_VOTES}**)`);
         }
       } catch (e: any) {
         await interaction.editReply(`❌ โหวตล้มเหลว: ${e.message}`);
@@ -721,17 +626,12 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.deferReply({ ephemeral: true });
       const idx = interaction.options.getInteger("index", true);
       try {
-        const songs = await getPlaylistSongs(20);
-        if (idx < 1 || idx > songs.length)
-          return interaction.editReply(
-            `❌ ลำดับไม่ถูกต้อง มีเพลงในคิวให้เลือกแค่ 1-${songs.length}`,
-          );
+        const songs = await getPlaylistSongs(25);
+        if (idx < 1 || idx > songs.length) return interaction.editReply(`❌ ลำดับไม่ถูกต้อง มีเพลงในคิวแค่ 1-${songs.length}`);
 
         const targetSong = songs[idx - 1];
         await removeSongFromPlaylist(targetSong?.id!);
-        await interaction.editReply(
-          `🗑️ ดีดเพลงลำดับที่ ${idx}: **${targetSong?.snippet?.title}** ออกจากคิวเรียบร้อยครับ`,
-        );
+        await interaction.editReply(`🗑️ ดีดเพลงลำดับที่ ${idx}: **${targetSong?.snippet?.title}** ออกจากตู้เรียบร้อยครับ`);
       } catch (e: any) {
         await interaction.editReply(`❌ ลบเพลงล้มเหลว: ${e.message}`);
       }
@@ -741,8 +641,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.deferReply({ ephemeral: true });
       try {
         let songs = await getPlaylistSongs(50);
-        if (songs.length === 0)
-          return interaction.editReply("ตู้เพลงว่างสะอาดอยู่แล้วจ้า");
+        if (songs.length === 0) return interaction.editReply("ตู้เพลงว่างสะอาดอยู่แล้วจ้า");
         while (songs.length > 0) {
           for (const s of songs) {
             await removeSongFromPlaylist(s.id!);
@@ -750,9 +649,7 @@ client.on("interactionCreate", async (interaction) => {
           songs = await getPlaylistSongs(50);
         }
         voteSkipUsers.clear();
-        await interaction.editReply(
-          "🧹 **กวาดล้างตู้สำเร็จ!** เคลียร์เพลงทั้งหมดออกจาก Playlist เรียบร้อยแล้วครับ",
-        );
+        await interaction.editReply("🧹 **กวาดล้างตู้สำเร็จ!** เคลียร์เพลงทั้งหมดออกจากคิวเรียบร้อยแล้วครับ");
       } catch (e: any) {
         await interaction.editReply(`❌ ล้มเหลว: ${e.message}`);
       }
@@ -771,9 +668,7 @@ client.on("interactionCreate", async (interaction) => {
           });
           totalSongs = res.data.items?.[0]?.contentDetails?.itemCount || 0;
         }
-        await interaction.editReply(
-          `📊 **สถานะระบบ jookCast คลาวด์**\n🟢 บอทสแตนด์บาย: 24 ชั่วโมง\n📂 ไอดีตู้เพลง: \`${config.playlistId || "ยังไม่มี"}\`\n🎵 มีเพลงในตู้ทั้งหมด: \`${totalSongs}\` เพลง`,
-        );
+        await interaction.editReply(`📊 **สถานะระบบ jookCast คลาวด์**\n🟢 บอทสแตนด์บาย: 24 ชั่วโมง\n📂 ไอดีตู้เพลง: \`${config.playlistId || "ยังไม่มี"}\`\n🎵 มีเพลงสะสมในเพลย์ลิสต์: \`${totalSongs}\` เพลง`);
       } catch (error: any) {
         await interaction.editReply(`❌ ดึงสถานะล้มเหลว: ${error.message}`);
       }
@@ -788,28 +683,20 @@ client.on("interactionCreate", async (interaction) => {
           prompt: "consent",
         });
         await interaction.reply({
-          content: `🔑 **ระบบผูกสิทธิ์บัญชี Host ตู้เพลงอัตโนมัติ:**\n1. ล็อกอินสิทธิ์โดย: [คลิกเชื่อมต่อที่นี่](${authUrl})\n2. หลังจากกดอนุญาตเสร็จ หน้าเว็บหลังบ้านจะซิงค์ข้อมูลบันทึกรหัสล็อกอินให้เองทันทีโดยที่พี่ไม่ต้องเอารหัสมาก๊อปวางแล้วครับ!`,
+          content: `🔑 **ระบบผูกสิทธิ์บัญชี Host ตู้เพลงอัตโนมัติ:**\n1. ล็อกอินสิทธิ์โดย: [คลิกเชื่อมต่อที่นี่](${authUrl})\n2. หลังจากกดอนุญาตเสร็จ หน้าเว็บหลังบ้านจะจัดการเซฟรหัสล็อกอินลงไฟล์โดยพี่ไม่ต้องคัดลอกรหัสเองเลยครับ!`,
           ephemeral: true,
         });
       } catch (error: any) {
-        await interaction.reply({
-          content: `❌ เกิดข้อผิดพลาด: ${error.message}`,
-          ephemeral: true,
-        });
+        await interaction.reply({ content: `❌ เกิดข้อผิดพลาด: ${error.message}`, ephemeral: true });
       }
     }
 
     if (commandName === "set_playlist") {
-      const newPlaylistId = interaction.options
-        .getString("playlist_id", true)
-        .trim();
+      const newPlaylistId = interaction.options.getString("playlist_id", true).trim();
       const config = loadConfig();
       config.playlistId = newPlaylistId;
       saveConfig(config);
-      await interaction.reply({
-        content: `✅ เปลี่ยนตู้เพลง jookCast ไปที่ Playlist ID: \`${newPlaylistId}\` สำเร็จ!`,
-        ephemeral: true,
-      });
+      await interaction.reply({ content: `✅ เปลี่ยนตู้เพลง jookCast ไปที่ Playlist ID: \`${newPlaylistId}\` สำเร็จ!`, ephemeral: true });
     }
 
     if (commandName === "create_playlist") {
@@ -817,10 +704,7 @@ client.on("interactionCreate", async (interaction) => {
       const playlistName = interaction.options.getString("name", true).trim();
       const privacy = interaction.options.getString("privacy") ?? "unlisted";
       try {
-        const generatedId = await createNewYouTubePlaylist(
-          playlistName,
-          privacy,
-        );
+        const generatedId = await createNewYouTubePlaylist(playlistName, privacy);
         if (!generatedId) throw new Error("ไม่ได้รับไอดีกลับมาจาก YouTube");
 
         const config = loadConfig();
@@ -829,19 +713,18 @@ client.on("interactionCreate", async (interaction) => {
 
         let embedStatus = "";
         try {
-          const introSnippet = await addSongToPlaylist(INTRO_VIDEO_ID);
-          embedStatus = `\n📻 บอทได้ฝังเพลงเริ่มต้นให้แล้ว: **"${introSnippet?.title}"** พี่สามารถนำลิงก์ด้านล่างไปกด Play เปิดทิ้งไว้บนแท็บเล็ตได้เลยครับ!`;
+          console.log("⏳ กำลังสุ่มดึงเพลงยอดฮิตป้อนลงคิวตู้เพลงใหม่...");
+          const trendingVideoIds = await getTopTrendingSongs();
+          if (trendingVideoIds[0]) {
+            const introSnippet = await addSongToPlaylist(trendingVideoIds[0], "jookcast-trending-standby");
+            embedStatus = `\n📻 บอทได้ฝังเพลงยอดฮิตเปิดตู้เริ่มต้นให้แล้ว: **"${introSnippet?.title}"** สามารถคาสต์เล่นบนหน้าจอหลักได้ทันทีครับ!`;
+          }
         } catch (introErr) {
-          console.error(
-            "⚠️ ไม่สามารถใส่เพลงเปิดสถานีอัตโนมัติได้ แต่องค์ประกอบเพลย์ลิสต์สร้างสำเร็จ:",
-            introErr,
-          );
-          embedStatus = `\n⚠️ *[Auto-Embed ล้มเหลว]* สร้างเพลย์ลิสต์ได้ แต่ระบบไม่สามารถใส่เพลง Intro เริ่มต้นให้ได้เนื่องจากสิทธิ์ติดขัด`;
+          console.error("⚠️ ไม่สามารถใส่เพลงเปิดสถานีอัตโนมัติได้:", introErr);
+          embedStatus = `\n⚠️ สร้างเพลย์ลิสต์ได้สำเร็จ แต่ระบบขัดขัดสิทธิ์ในการฝังเพลงเริ่มต้นชั่วคราว`;
         }
 
-        await interaction.editReply(
-          `✨ **สร้างคิวเพลง jookCast ใหม่สำเร็จ!**\n📂 **ชื่อ:** \`${playlistName}\`${embedStatus}\n🆔 **ID:** \`${generatedId}\`\n🔗 **ลิงก์คาสต์ขึ้นจอแท็บเล็ต:** https://www.youtube.com/playlist?list=${generatedId}`,
-        );
+        await interaction.editReply(`✨ **สร้างคิวเพลง jookCast ใหม่สำเร็จ!**\n📂 **ชื่อ:** \`${playlistName}\`${embedStatus}\n🆔 **ID:** \`${generatedId}\`\n🔗 **ลิงก์คาสต์ขึ้นจอแท็บเล็ต:** https://www.youtube.com/playlist?list=${generatedId}`);
       } catch (error: any) {
         await interaction.editReply(`❌ สร้างล้มเหลว: ${error.message}`);
       }
@@ -851,31 +734,21 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.isStringSelectMenu()) {
     if (interaction.customId === "search-select") {
       const selectedVideoId = interaction.values?.[0];
-      if (!selectedVideoId)
-        return interaction.reply({
-          content: "❌ ผิดพลาดในการดึงข้อมูลคิวเพลง",
-          ephemeral: true,
-        });
+      if (!selectedVideoId) return interaction.reply({ content: "❌ ผิดพลาดในการดึงข้อมูลคิวเพลง", ephemeral: true });
 
-      await interaction.reply({
-        content: "✅ เพิ่มเพลงเข้าสู่คลังหลักเรียบร้อยแล้ว!",
-        ephemeral: true,
-      });
+      await interaction.reply({ content: "✅ เพิ่มเพลงเข้าสู่คลังหลักและตัดคิวเพลงสแตนด์บายออกเรียบร้อย!", ephemeral: true });
 
       try {
-        const snippet = await addSongToPlaylist(selectedVideoId);
-        await moveNewSongBeforeIntro(); // ✨ สลับลำดับย้ายเพลงใหม่ขึ้นก่อนหน้าเพลง Intro สแตนด์บาย
+        // ✨ ใช้ฟังก์ชันตัดคิวสแตนด์บายทิ้ง และเอาเพลงที่เลือกเสียบต่อท้ายเพลงปัจจุบัน
+        const snippet = await cleanStandbyAndAppendNewSong(selectedVideoId);
 
         let logMessage = `🎶 **<@${interaction.user.id}>** ได้เลือกเพลงหยอดเข้าตู้เรียบร้อย!\n🎵 **ชื่อเพลง:** ${snippet?.title}\n🔗 ลิงก์: https://youtu.be/${selectedVideoId}`;
 
         voteSkipUsers.clear();
-        const autoFilled = await checkAndAutoFillQueue(); // ✨ ตรวจเช็คเพื่อเตรียมเติมเพลง Intro พยุงท้ายลิสต์
-        if (autoFilled.length > 0)
-          logMessage += `\n🤖 *[Standby-Fill]* คิวเพลงหมด บอทช่วยเติมเพลงสแตนด์บายคั่นเวลาให้แล้วครับ`;
+        const autoFilled = await checkAndAutoFillQueue();
+        if (autoFilled.length > 0) logMessage += `\n🤖 *[Standby-Fill]* คิวเพลงหมดเกลี้ยง บอทสุ่มเพลงยอดฮิต 5 เพลงมาเปิดสแตนด์บายให้แล้วจ้า`;
 
-        const feedChannel = interaction.guild?.channels.cache.find(
-          (ch) => ch.name === "jookcast-feed" && ch.isTextBased(),
-        ) as TextChannel;
+        const feedChannel = interaction.guild?.channels.cache.find((ch) => ch.name === "jookcast-feed" && ch.isTextBased()) as TextChannel;
         if (feedChannel) {
           await feedChannel.send({ content: logMessage, flags: [4096] });
         }
@@ -940,24 +813,18 @@ http
           "<h1>🔒 ล็อกอินบัญชี YouTube Host สำเร็จแล้ว!</h1><p>ระบบทำการบันทึกและจัดการผูกสิทธิ์หลังบ้านให้เสร็จสิ้น โดยส่งสัญญาณแจ้งกลับไปยัง Discord เรียบร้อย สามารถปิดหน้านี้ได้เลยครับพี่!</p>",
         );
       } catch (err: any) {
-        res.writeHead(500, { "Content-Type": "text/plain" });
-        res.end(`OAuth Automation Error: ${err.message}`);
+        res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end(`❌ ผูกสิทธิ์ล้มเหลว: ${err.message}`);
       }
       return;
     }
 
+    // Default Route สำหรับทริกเกอร์เช็คเน็ตป้องกันบอทหลับ (Keep Alive)
     res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
-    res.end(`jookCast Status: ${BOT_VERSION} is standing by! 🎙️🎵`);
+    res.end(`jookCast Station Standby - Version ${BOT_VERSION}`);
   })
   .listen(PORT, () => {
-    console.log(`🌐 Web Server Automation Live on Port ${PORT}`);
+    console.log(`🌐 เซิร์ฟเวอร์ OAuth Callback รันสแตนด์บายคู่ขนานที่พอร์ต [${PORT}] เรียบร้อยครับ`);
   });
 
-// ─── 🔌 DISCORD LOGIN ───────────────────────────────────────────────────────
-if (!DISCORD_TOKEN) {
-  console.error("❌ ไม่พบ DISCORD_TOKEN ในระบบ Environment");
-} else {
-  client.login(DISCORD_TOKEN).catch((err) => {
-    console.error("❌ Discord Login Failed:", err.message);
-  });
-}
+client.login(DISCORD_TOKEN);
