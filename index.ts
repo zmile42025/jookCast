@@ -180,8 +180,12 @@ async function searchYouTubeFiveVideos(keyword: string) {
 
 async function checkAndAutoFillQueue(): Promise<string[]> {
   try {
+    // 1. ดึงคิวเพลงมาเช็คดู 5 เพลงแรก
     const currentSongs = await getPlaylistSongs(5);
-    if (currentSongs.length <= 1) {
+    
+    // ✨ ปรับตรงนี้: จากเดิม <= 1 ให้เปลี่ยนเป็น <= 3 
+    // เพื่อให้ในตู้มีเพลงสำรองสแตนด์บายไว้ตลอดเวลา จอจะได้ไม่ดีดออกตอนเล่นเพลงสุดท้ายใกล้จบ
+    if (currentSongs.length <= 3) {
       const youtube = getYouTubeClient();
       const trendingResponse = await youtube.videos.list({
         part: ['snippet'],
@@ -195,6 +199,8 @@ async function checkAndAutoFillQueue(): Promise<string[]> {
       if (trendingVideos.length === 0) return [];
 
       const shuffled = trendingVideos.sort(() => 0.5 - Math.random());
+      
+      // เติมเข้าไปหล่อเลี้ยงเพิ่มอีก 3 เพลงป้องกันคิวแห้ง
       const selectedVideos = shuffled.slice(0, 3);
       const addedTitles: string[] = [];
 
