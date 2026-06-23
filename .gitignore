@@ -34,6 +34,11 @@ coverage/
 dist/
 build/Release
 
+# 📁 บล็อกกุญแจแอปและรหัสล็อกอินหลังบ้าน
+credentials.json
+token.json
+config.json
+
 # TypeScript cache
 *.tsbuildinfo
 
