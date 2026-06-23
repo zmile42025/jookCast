@@ -1,4 +1,16 @@
-import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } from 'discord.js';
+import { 
+  Client, 
+  GatewayIntentBits, 
+  REST, 
+  Routes, 
+  SlashCommandBuilder, 
+  PermissionFlagsBits, 
+  EmbedBuilder, 
+  ActionRowBuilder, 
+  StringSelectMenuBuilder, 
+  StringSelectMenuOptionBuilder,
+  TextChannel
+} from 'discord.js';
 import { google } from 'googleapis';
 import fs from 'fs';
 import path from 'path';
@@ -17,6 +29,10 @@ const CONFIG_PATH = path.join(__dirname, 'config.json');
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const SCOPES = ['https://www.googleapis.com/auth/youtube'];
+
+// 📝 กำหนดเวอร์ชันของบอทปัจจุบัน (เปลี่ยนตรงนี้เวลาอัปเดตฟีเจอร์)
+const BOT_VERSION = 'v2.5.0';
+const RELEASE_NOTES = `✨ **มีอะไรใหม่ในเวอร์ชัน ${BOT_VERSION}**\n- 🔍 ค้นหาเพลงคมชัดขึ้น เลือกได้ 5 อันดับแรกผ่าน Dropdown Menu (เห็นเฉพาะคุณ)\n- 📖 เพิ่มระบบแนะนำวิธีใช้บอทอัตโนมัติในช่องแชท\n- 🤖 ปรับปรุงระบบ Auto-Fill เติมคิวเพลงฮิต TH Trending วิ่งเนียนขึ้น`;
 
 let voteSkipUsers = new Set<string>();
 const REQUIRED_VOTES = 3;
@@ -50,7 +66,7 @@ const client = new Client({
 
 function getYouTubeOAuth2Client() {
   if (!fs.existsSync(CREDENTIALS_PATH)) {
-    throw new Error('ไม่พบไฟล์ credentials.json ในเครื่อง กรุณาใส่ไฟล์ก่อนรันบอท');
+    throw new Error('ไม่พบไฟล์ credentials.json ในเครื่อง');
   }
   const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8'));
   const { client_secret, client_id, redirect_uris } = credentials.installed;
@@ -59,7 +75,7 @@ function getYouTubeOAuth2Client() {
 
 function getYouTubeClient() {
   if (!fs.existsSync(TOKEN_PATH)) {
-    throw new Error('บอทยังไม่ได้ล็อกอินบัญชี YouTube Host กรุณาใช้คำสั่ง `/setup_host` บน Discord');
+    throw new Error('บอทยังไม่ได้ล็อกอินบัญชี YouTube Host');
   }
   const oAuth2Client = getYouTubeOAuth2Client();
   const token = JSON.parse(fs.readFileSync(TOKEN_PATH, 'utf8'));
@@ -74,11 +90,11 @@ function extractVideoId(url: string): string | null {
   return (videoId && videoId.length === 11) ? videoId : null;
 }
 
-// ─── YOUTUBE INTERACTION FUNCTIONS ──────────────────────────────────────────
+// ─── YOUTUBE API FUNCTIONS ──────────────────────────────────────────────────
 
 async function addSongToPlaylist(videoId: string) {
   const config = loadConfig();
-  if (!config.playlistId) throw new Error('ยังไม่ได้ตั้งค่าไอดี Playlist ปลายทาง');
+  if (!config.playlistId) throw new Error('ยังไม่ได้ตั้งค่าไอดี Playlist');
   const youtube = getYouTubeClient();
   const response = await youtube.playlistItems.insert({
     part: ['snippet'],
@@ -90,18 +106,6 @@ async function addSongToPlaylist(videoId: string) {
     },
   });
   return response.data.snippet;
-}
-
-async function createNewYouTubePlaylist(title: string, privacyStatus: string) {
-  const youtube = getYouTubeClient();
-  const response = await youtube.playlists.insert({
-    part: ['snippet', 'status'],
-    requestBody: {
-      snippet: { title: title, description: 'เพลย์ลิสต์นี้สร้างอัตโนมัติโดย Discord jookCast Bot' },
-      status: { privacyStatus: privacyStatus },
-    },
-  });
-  return response.data.id;
 }
 
 async function getPlaylistSongs(maxResults = 10) {
@@ -121,45 +125,34 @@ async function removeSongFromPlaylist(playlistItemId: string) {
   await youtube.playlistItems.delete({ id: playlistItemId });
 }
 
-// ฟังก์ชันค้นหาเพลงจาก Keyword
-async function searchYouTubeVideo(keyword: string): Promise<{ videoId: string; title: string } | null> {
+// ค้นหาเพลงแล้วดึงออกมา 5 อันดับแรก
+async function searchYouTubeFiveVideos(keyword: string) {
   const youtube = getYouTubeClient();
   const response = await youtube.search.list({
     part: ['snippet'],
     q: keyword,
-    maxResults: 1,
+    maxResults: 5,
     type: ['video']
   });
-
-  const item = response.data.items?.[0];
-  if (item && item.id?.videoId && item.snippet?.title) {
-    return {
-      videoId: item.id.videoId,
-      title: item.snippet.title
-    };
-  }
-  return null;
+  return response.data.items || [];
 }
 
-// 🔥 ระบบ Auto-Fill: สแกนและดึงเพลงฮิตติดเทรนด์ไทยมาเติมเข้าคิวเมื่อคิวเหงา
 async function checkAndAutoFillQueue(): Promise<string[]> {
   try {
     const currentSongs = await getPlaylistSongs(5);
-    // ถ้าคิวเหลือต่ำกว่า 2 เพลง ให้สุ่มดึงเพลงฮิตมาเติมระบบ
     if (currentSongs.length <= 1) {
       const youtube = getYouTubeClient();
       const trendingResponse = await youtube.videos.list({
         part: ['snippet'],
         chart: 'mostPopular',
-        regionCode: 'TH', // ดึงเทรนด์ประเทศไทย
-        videoCategoryId: '10', // Category ID 10 คือหมวดหมู่ "Music"
+        regionCode: 'TH',
+        videoCategoryId: '10',
         maxResults: 10
       });
 
       const trendingVideos = trendingResponse.data.items || [];
       if (trendingVideos.length === 0) return [];
 
-      // สุ่มเลือกมา 3 เพลงเพื่อไม่ให้ซ้ำกันเกินไป
       const shuffled = trendingVideos.sort(() => 0.5 - Math.random());
       const selectedVideos = shuffled.slice(0, 3);
       const addedTitles: string[] = [];
@@ -173,331 +166,291 @@ async function checkAndAutoFillQueue(): Promise<string[]> {
       return addedTitles;
     }
   } catch (error) {
-    console.error('⚠️ ไม่สามารถรันระบบ Auto-Fill ได้:', error);
+    console.error('⚠️ Auto-Fill Error:', error);
   }
   return [];
 }
 
-// ─── REGISTER SLASH COMMANDS ────────────────────────────────────────────────
+// ─── ระบบคู่มือการใช้งานและแจ้งเตือนอัปเดตอัตโนมัติ ───────────────────────────────
+
+async function setupStatusChannelAndNotify(client: Client) {
+  const CHANNEL_NAME = 'jookcast-status';
+  
+  for (const guild of client.guilds.cache.values()) {
+    try {
+      // 1. ค้นหาช่องแชทเดิมที่มีอยู่แล้ว หรือสร้างใหม่ถ้าไม่มี
+      let targetChannel = guild.channels.cache.find(ch => ch.name === CHANNEL_NAME && ch.isTextBased()) as TextChannel;
+      
+      if (!targetChannel) {
+        targetChannel = await guild.channels.create({
+          name: CHANNEL_NAME,
+          reason: 'สำหรับแสดงวิธีใช้งานและแจ้งเตือนอัปเดตระบบตู้เพลง jookCast',
+          permissionOverwrites: [
+            {
+              id: guild.roles.everyone.id,
+              deny: [PermissionFlagsBits.SendMessages], // คนทั่วไปห้ามพิมพ์ข้อความในช่องนี้เพื่อป้องกันแชทรัศมีรก
+              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory]
+            }
+          ]
+        });
+      }
+
+      // 2. ส่งบอร์ด Embed อธิบายวิธีใช้ตู้เพลงหลัก (Welcome Embed)
+      const messages = await targetChannel.messages.fetch({ limit: 10 });
+      const hasWelcomeMessage = messages.some(msg => msg.embeds.some(emb => emb.title?.includes('คู่มือการใช้งาน')));
+      
+      if (!hasWelcomeMessage) {
+        const welcomeEmbed = new EmbedBuilder()
+          .setTitle('🎙️ ตู้เพลงคลาวด์ jookCast - คู่มือการใช้งาน')
+          .setDescription('ระบบฝากเพลงจาก Discord ไปเล่นบนหน้าจอทีวีหรือคอมพิวเตอร์กลางผ่านคลัง YouTube Playlist ได้แบบเรียลไทม์!')
+          .setColor('#00f5d4')
+          .addFields(
+            { name: '🔍 ค้นหาเพลง', value: '`/search [ชื่อเพลง/ศิลปิน]` บอทจะแสดงเมนูตัวเลือกให้กดเลือกเพลงเข้าคิวทันที', inline: false },
+            { name: '🔗 หยอดเพลงตรงด้วยลิงก์', value: '`/add [วางลิงก์ YouTube]` แอดเข้าคิวตู้เพลงหลักตรงๆ', inline: false },
+            { name: '📋 ตรวจสอบคิวเพลง', value: '`/queue` เช็คดูรายชื่อเพลง 10 เพลงถัดไปในตู้', inline: true },
+            { name: '📻 ดูเพลงปัจจุบัน', value: '`/nowplaying` ดูเพลงที่กำลังเล่น', inline: true },
+            { name: '🗳️ โหวตข้ามเพลงกร่อย', value: '`/voteskip` ร่วมใจกันกดครบ 3 คน ดีดเพลงหัวคิวทิ้งทันที!', inline: false }
+          )
+          .setFooter({ text: 'jookCast Station • บันเทิงและเสถียรภาพสูงสุด' });
+        
+        await targetChannel.send({ embeds: [welcomeEmbed] });
+      }
+
+      // 3. ส่งสัญญาณเตือนอัปเดตระบบล่าสุด (Release Notes) หากตรวจเจอว่ายังไม่เคยโพสต์เวอร์ชันนี้
+      const isAlreadyNotified = messages.some(msg => msg.embeds.some(emb => emb.title?.includes(BOT_VERSION)));
+      if (!isAlreadyNotified) {
+        const updateEmbed = new EmbedBuilder()
+          .setTitle(`🚀 บอท jookCast ได้รับการอัปเกรดระบบเป็นเวอร์ชัน ${BOT_VERSION}!`)
+          .setDescription(RELEASE_NOTES)
+          .setColor('#9b5de5')
+          .setTimestamp();
+        
+        await targetChannel.send({ embeds: [updateEmbed] });
+      }
+
+    } catch (err) {
+      console.error(`❌ ไม่สามารถเซ็ตอัปช่องสถานะในเซิร์ฟเวอร์ได้:`, err);
+    }
+  }
+}
+
+// ─── COMMANDS REGISTER ──────────────────────────────────────────────────────
 
 const commands = [
   new SlashCommandBuilder().setName('add').setDescription('หยอดเพลงด้วยลิงก์ลงตู้คิว jookCast (YouTube Playlist)')
     .addStringOption(opt => opt.setName('url').setDescription('ลิงก์เพลง YouTube').setRequired(true)),
   
-  new SlashCommandBuilder().setName('search').setDescription('ค้นหาและหยอดเพลงเข้าคิว jookCast ด้วยชื่อเพลง')
-    .addStringOption(opt => opt.setName('keyword').setDescription('พิมพ์ชื่อเพลง หรือชื่อศิลปินที่ต้องการค้นหา').setRequired(true)),
+  new SlashCommandBuilder().setName('search').setDescription('ค้นหาเพลงแล้วกดเลือกเข้าตู้คิว jookCast (เห็นเฉพาะคุณ)')
+    .addStringOption(opt => opt.setName('keyword').setDescription('พิมพ์ชื่อเพลง หรือชื่อศิลปิน').setRequired(true)),
 
   new SlashCommandBuilder().setName('queue').setDescription('ดูรายชื่อเพลงคิวปัจจุบันใน jookCast'),
-  
   new SlashCommandBuilder().setName('nowplaying').setDescription('ดูเพลงที่กำลังออนแอร์ / คิวล่าสุด'),
-  
   new SlashCommandBuilder().setName('voteskip').setDescription('ร่วมโหวตข้ามเพลงกร่อยที่อยู่หัวคิวปัจจุบัน'),
-  
   new SlashCommandBuilder().setName('lucky').setDescription('ระบบสุ่มเพลงขำๆ เข้าตู้ jookCast ดับเหงา'),
-
-  new SlashCommandBuilder().setName('setup_host').setDescription('[Admin Only] ขอลิงก์ล็อกอินยืนยันสิทธิ์สำหรับ Host')
+  
+  new SlashCommandBuilder().setName('remove').setDescription('[Admin] ลบเพลงออกจากคิวตามลำดับตัวเลข')
+    .addIntegerOption(opt => opt.setName('index').setDescription('ลำดับเพลงในคิว').setRequired(true))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-  new SlashCommandBuilder().setName('submit_code').setDescription('[Admin Only] ส่งรหัส Code ที่ได้จากการล็อกอิน')
-    .addStringOption(opt => opt.setName('code_or_url').setDescription('วาง URL หรือรหัส Code').setRequired(true))
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-  new SlashCommandBuilder().setName('set_playlist').setDescription('[Admin Only] เปลี่ยนไอดี YouTube Playlist ปลายทาง')
-    .addStringOption(opt => opt.setName('playlist_id').setDescription('ใส่ YouTube Playlist ID').setRequired(true))
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-  new SlashCommandBuilder().setName('create_playlist').setDescription('[Admin Only] สั่งสร้าง YouTube Playlist ใหม่เอี่ยม')
-    .addStringOption(opt => opt.setName('name').setDescription('ตั้งชื่อเพลย์ลิสต์').setRequired(true))
-    .addStringOption(opt => opt.setName('privacy').setDescription('ความเป็นส่วนตัว').setRequired(false)
-      .addChoices(
-        { name: 'Unlisted (ไม่สาธารณะ - แนะนำ)', value: 'unlisted' },
-        { name: 'Public (สาธารณะ)', value: 'public' },
-        { name: 'Private (ส่วนตัว)', value: 'private' }
-      ))
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-  new SlashCommandBuilder().setName('remove').setDescription('[Admin Only] ลบเพลงออกจากคิวตามลำดับตัวเลข')
-    .addIntegerOption(opt => opt.setName('index').setDescription('ลำดับเพลงในคำสั่ง /queue (เช่น 1, 2, 3)').setRequired(true))
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-  new SlashCommandBuilder().setName('clear_queue').setDescription('[Admin Only] ล้างเพลงทั้งหมดในตู้ jookCast ให้โล่งเอี่ยม')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-  new SlashCommandBuilder().setName('jookcast_status').setDescription('[Admin Only] ตรวจสอบสถิติและสถานะการเชื่อมต่อของระบบ')
+  new SlashCommandBuilder().setName('clear_queue').setDescription('[Admin] ล้างเพลงทั้งหมดในตู้ jookCast ให้โล่งเอี่ยม')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 ].map(cmd => cmd.toJSON());
 
-async function registerSlashCommands(clientId: string) {
-  if (!DISCORD_TOKEN) return;
-  const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
-  try {
-    console.log('⏳ กำลังอัปเดตระบบคำสั่ง Slash Commands สำหรับ jookCast...');
-    await rest.put(Routes.applicationCommands(clientId), { body: commands });
-    console.log('✅ อัปเดต Slash Commands ของ jookCast ทั้งหมดเรียบร้อย!');
-  } catch (error) {
-    console.error('❌ เกิดข้อผิดพลาดในการลงทะเบียนคำสั่ง:', error);
-  }
-}
-
 client.once('ready', async () => {
-  console.log(`🎙️ บอท jookCast พร้อมออนไลน์ทำงานแล้วในชื่อ: ${client.user?.tag}`);
+  console.log(`🎙️ บอท jookCast ${BOT_VERSION} ออนไลน์แล้ว!`);
   if (client.user?.id) {
-    await registerSlashCommands(client.user.id);
+    const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN!);
+    await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+    
+    // ทำงานระบบสร้างช่องคู่มือและเด้งแจ้งเตือนการอัปเดตโค้ด
+    await setupStatusChannelAndNotify(client);
   }
 });
 
-// ─── HANDLERS ───────────────────────────────────────────────────────────────
+// ─── INTERACTION HANDLERS ───────────────────────────────────────────────────
 
 client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-  const { commandName } = interaction;
+  // 1. จัดการคำสั่ง Slash Commands ปกติ
+  if (interaction.isChatInputCommand()) {
+    const { commandName } = interaction;
 
-  // 🎵 /add (เพิ่มด้วยลิงก์ตรง)
-  if (commandName === 'add') {
-    const url = interaction.options.getString('url', true).trim();
-    const videoId = extractVideoId(url);
-    if (!videoId) return interaction.reply({ content: '❌ ลิงก์ YouTube ไม่ถูกต้องครับ', ephemeral: true });
+    // 🔍 ระบบ /search แบบใหม่ (เลือกผ่านดรอปดาวน์ แสดงผลเฉพาะผู้ใช้คนเดียว)
+    if (commandName === 'search') {
+      const keyword = interaction.options.getString('keyword', true).trim();
+      await interaction.deferReply({ ephemeral: true }); // ล็อกให้แสดงผลเฉพาะคุณ (Ephemeral)
 
-    await interaction.deferReply();
-    try {
-      const snippet = await addSongToPlaylist(videoId);
-      let replyMessage = `🎉 หยอดเพลงลงตู้คิว jookCast สำเร็จแล้ว!\n🎵 **ชื่อเพลง:** ${snippet?.title}`;
-      
-      // ตรวจเช็คบิ้วด์ออโต้คิวกันเหงา
-      const autoFilled = await checkAndAutoFillQueue();
-      if (autoFilled.length > 0) {
-        replyMessage += `\n\n🤖 *[Auto-Fill]* ตู้เพลงเกือบว่าง! ดึงเพลงฮิตติดเทรนด์เติมท้ายแถวเพิ่มให้แล้ว:\n⚡ ${autoFilled.join('\n⚡ ')}`;
-      }
-
-      await interaction.editReply(replyMessage);
-    } catch (error: any) {
-      await interaction.editReply(`❌ ล้มเหลว: ${error.message}`);
-    }
-  }
-
-  // 🔍 /search (ค้นหาด้วยคีย์เวิร์ด)
-  if (commandName === 'search') {
-    const keyword = interaction.options.getString('keyword', true).trim();
-    await interaction.deferReply();
-
-    try {
-      const searchResult = await searchYouTubeVideo(keyword);
-      if (!searchResult) {
-        return interaction.editReply(`❌ ไม่พบผลลัพธ์การค้นหาสำหรับคำว่า: \`${keyword}\``);
-      }
-
-      const snippet = await addSongToPlaylist(searchResult.videoId);
-      let replyMessage = `🔍 ค้นพบและหยอดเข้าตู้สำเร็จ!\n🎵 **ชื่อเพลง:** ${snippet?.title}\n🔗 ลิงก์: https://youtu.be/${searchResult.videoId}`;
-      
-      const autoFilled = await checkAndAutoFillQueue();
-      if (autoFilled.length > 0) {
-        replyMessage += `\n\n🤖 *[Auto-Fill]* ตู้เพลงเกือบว่าง! ดึงเพลงฮิตติดเทรนด์เติมท้ายแถวเพิ่มให้แล้ว:\n⚡ ${autoFilled.join('\n⚡ ')}`;
-      }
-
-      await interaction.editReply(replyMessage);
-    } catch (error: any) {
-      await interaction.editReply(`❌ การค้นหาล้มเหลว: ${error.message}`);
-    }
-  }
-
-  // 📋 /queue
-  if (commandName === 'queue') {
-    await interaction.deferReply();
-    try {
-      // ก่อนโชว์คิวแอบเช็คว่าใกล้หมดตู้หรือยัง ถ้าใกล้หมดระบบเติมให้ก่อนดึงคิวเลย!
-      const autoFilled = await checkAndAutoFillQueue();
-      
-      const songs = await getPlaylistSongs(10);
-      if (songs.length === 0) return interaction.editReply('📭 ตอนนี้ตู้เพลงว่างเปล่าจ้า ไม่มีเพลงในคิวเลย ใช้ `/search` มาหาเพลงสิ!');
-      
-      let queueText = songs.map((song, index) => `${index + 1}. **${song.snippet?.title}**`).join('\n');
-      if (autoFilled.length > 0) {
-        queueText += `\n\n🤖 *[Auto-Fill]* เติมเพลงฮิตติดเทรนด์เพิ่มให้แล้ว ${autoFilled.length} เพลง`;
-      }
-
-      const embed = new EmbedBuilder()
-        .setTitle('📋 คิวเพลงปัจจุบันใน jookCast')
-        .setDescription(queueText)
-        .setColor('#9b5de5')
-        .setFooter({ text: `แสดงทั้งหมด ${songs.length} เพลงล่าสุด` });
-      
-      await interaction.editReply({ embeds: [embed] });
-    } catch (error: any) {
-      await interaction.editReply(`❌ เกิดข้อผิดพลาด: ${error.message}`);
-    }
-  }
-
-  // 🎧 /nowplaying
-  if (commandName === 'nowplaying') {
-    await interaction.deferReply();
-    try {
-      const songs = await getPlaylistSongs(1);
-      if (songs.length === 0) return interaction.editReply('🔇 ตอนนี้ไม่มีเพลงใดๆ กำลังออนแอร์อยู่ครับ');
-      
-      const current = songs[0]?.snippet;
-      const embed = new EmbedBuilder()
-        .setTitle('📻 กำลังออนแอร์ / คิวถัดไป')
-        .setDescription(`🎵 **${current?.title}**\n\n📺 ช่อง: *${current?.videoOwnerChannelTitle || 'Unknown'}*`)
-        .setThumbnail(current?.thumbnails?.high?.url || current?.thumbnails?.default?.url || null)
-        .setColor('#00f5d4');
-      
-      await interaction.editReply({ embeds: [embed] });
-    } catch (error: any) {
-      await interaction.editReply(`❌ เกิดข้อผิดพลาด: ${error.message}`);
-    }
-  }
-
-  // 🗳️ /voteskip
-  if (commandName === 'voteskip') {
-    await interaction.deferReply();
-    try {
-      const songs = await getPlaylistSongs(1);
-      if (songs.length === 0) return interaction.editReply('❌ ไม่มีเพลงให้ข้ามจ้า ตู้เพลงว่างอยู่');
-
-      const userId = interaction.user.id;
-      if (voteSkipUsers.has(userId)) {
-        return interaction.editReply(`⚠️ คุณเคยโหวตข้ามเพลงนี้ไปแล้ว! (${voteSkipUsers.size}/${REQUIRED_VOTES})`);
-      }
-
-      voteSkipUsers.add(userId);
-
-      if (voteSkipUsers.size >= REQUIRED_VOTES) {
-        await removeSongFromPlaylist(songs[0]?.id!);
-        voteSkipUsers.clear();
-        
-        // เผื่อคนกดข้ามจนตู้ว่าง ทำการเติมคิวเพลงฮิตทันที
-        await checkAndAutoFillQueue();
-
-        await interaction.editReply(`⏭️ **คะแนนเสียงครบถ้วน!** ดีดเพลงเก่าหัวคิวออกให้แล้ว หน้าจอจะแคสต์ไปเพลงถัดไปอัตโนมัติครับ!`);
-      } else {
-        await interaction.editReply(`🗳️ มีคนอยากข้ามเพิ่มอีก 1 เสียง! (**${voteSkipUsers.size}/${REQUIRED_VOTES}** คนต้องการข้ามเพลงนี้)`);
-      }
-    } catch (error: any) {
-      await interaction.editReply(`❌ โหวตข้ามล้มเหลว: ${error.message}`);
-    }
-  }
-
-  // 🎲 /lucky
-  if (commandName === 'lucky') {
-    await interaction.deferReply();
-    const funSongs = [
-      'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-      'https://www.youtube.com/watch?v=kJQP7kiw5Fk',
-      'https://www.youtube.com/watch?v=9bZkp7q19f0',
-    ];
-    
-    const randomSong = funSongs[Math.floor(Math.random() * funSongs.length)]!;
-    const videoId = extractVideoId(randomSong);
-
-    if (!videoId) return interaction.editReply('❌ เกิดข้อผิดพลาดในระบบสุ่มลิงก์เพลง');
-
-    try {
-      const snippet = await addSongToPlaylist(videoId);
-      voteSkipUsers.clear();
-      await interaction.editReply(`🎲 **ตู้เพลงสุ่มนำโชคระเบิด!** หยอดเพลงพิเศษเข้าตู้ให้แล้ว:\n🎵 **ชื่อเพลง:** ${snippet?.title}`);
-    } catch (error: any) {
-      await interaction.editReply(`❌ สุ่มเพลงล้มเหลว: ${error.message}`);
-    }
-  }
-
-  // ✂️ /remove [Admin]
-  if (commandName === 'remove') {
-    await interaction.deferReply({ ephemeral: true });
-    const index = interaction.options.getInteger('index', true);
-    try {
-      const songs = await getPlaylistSongs(20);
-      if (index < 1 || index > songs.length) return interaction.editReply(`❌ ระบุลำดับไม่ถูกต้อง มีเพลงในคิวให้เลือกแค่ 1-${songs.length}`);
-      
-      const targetSong = songs[index - 1];
-      await removeSongFromPlaylist(targetSong?.id!);
-      await interaction.editReply(`🗑️ ดีดเพลงลำดับที่ ${index}: **${targetSong?.snippet?.title}** ออกจากคิวเรียบร้อยครับ`);
-    } catch (error: any) {
-      await interaction.editReply(`❌ ลบเพลงล้มเหลว: ${error.message}`);
-    }
-  }
-
-  // 🧹 /clear_queue [Admin]
-  if (commandName === 'clear_queue') {
-    await interaction.deferReply({ ephemeral: true });
-    try {
-      let songs = await getPlaylistSongs(50);
-      if (songs.length === 0) return interaction.editReply('ตู้เพลงว่างสะอาดอยู่แล้วจ้า');
-      
-      while (songs.length > 0) {
-        for (const song of songs) {
-          await removeSongFromPlaylist(song.id!);
+      try {
+        const videos = await searchYouTubeFiveVideos(keyword);
+        if (videos.length === 0) {
+          return interaction.editReply(`❌ ไม่พบผลลัพธ์บน YouTube สำหรับคำว่า: \`${keyword}\``);
         }
-        songs = await getPlaylistSongs(50);
+
+        // สร้าง Dropdown Component
+        const selectMenu = new StringSelectMenuBuilder()
+          .setCustomId('search-select')
+          .setPlaceholder('🎵 เลือกเพลงที่ต้องการหยอดเข้าตู้ด้านล่างนี้ได้เลยครับ...');
+
+        videos.forEach((video) => {
+          const vId = video.id?.videoId;
+          const title = video.snippet?.title || 'Unknown Title';
+          const channel = video.snippet?.channelTitle || 'Unknown Channel';
+          
+          if (vId) {
+            selectMenu.addOptions(
+              new StringSelectMenuOptionBuilder()
+                .setLabel(title.slice(0, 95)) // จำกัดความยาวไม่เกิน 100 ตัวอักษรตามสเปก Discord
+                .setDescription(`ช่อง: ${channel.slice(0, 50)}`)
+                .setValue(vId)
+            );
+          }
+        });
+
+        const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
+        await interaction.editReply({
+          content: `🔍 **ผลลัพธ์การค้นหาสำหรับ:** \`${keyword}\`\n*(ข้อความนี้จะเห็นแค่คุณคนเดียว เพื่อนร่วมห้องไม่เห็นช้อยส์ที่เลือกครับ)*`,
+          components: [row]
+        });
+
+      } catch (error: any) {
+        await interaction.editReply(`❌ การค้นหาล้มเหลว: ${error.message}`);
       }
-      voteSkipUsers.clear();
-      await interaction.editReply('🧹 **กวาดล้างตู้สำเร็จ!** เคลียร์เพลงทั้งหมดออกจาก Playlist เรียบร้อยแล้วครับ');
-    } catch (error: any) {
-      await interaction.editReply(`❌ ล้างตู้ล้มเหลว: ${error.message}`);
+    }
+
+    // คำสั่ง /add, /queue, /nowplaying, /voteskip, /lucky, /remove, /clear_queue ทำงานเหมือนเดิมทุกประการ...
+    if (commandName === 'add') {
+      const url = interaction.options.getString('url', true).trim();
+      const videoId = extractVideoId(url);
+      if (!videoId) return interaction.reply({ content: '❌ ลิงก์ YouTube ไม่ถูกต้องครับ', ephemeral: true });
+      await interaction.deferReply();
+      try {
+        const snippet = await addSongToPlaylist(videoId);
+        let msg = `🎉 หยอดเพลงลงตู้คิว jookCast สำเร็จแล้ว!\n🎵 **ชื่อเพลง:** ${snippet?.title}`;
+        const autoFilled = await checkAndAutoFillQueue();
+        if (autoFilled.length > 0) msg += `\n🤖 *[Auto-Fill]* เติมเพลงเทรนด์เพลงฮิตพ่วงท้ายแถวให้แล้ว!`;
+        await interaction.editReply(msg);
+      } catch (error: any) { await interaction.editReply(`❌ ล้มเหลว: ${error.message}`); }
+    }
+
+    if (commandName === 'queue') {
+      await interaction.deferReply();
+      try {
+        const autoFilled = await checkAndAutoFillQueue();
+        const songs = await getPlaylistSongs(10);
+        if (songs.length === 0) return interaction.editReply('📭 ตู้เพลงว่างเปล่าจ้า พิมพ์ `/search` มาเปิดเพลงสิ!');
+        let text = songs.map((s, i) => `${i + 1}. **${s.snippet?.title}**`).join('\n');
+        if (autoFilled.length > 0) text += `\n\n🤖 *[Auto-Fill]* เพลงคิวใกล้หมด เติมเทรนด์ติดอันดับ TH เพิ่มให้เรียบร้อย`;
+        const embed = new EmbedBuilder().setTitle('📋 คิวเพลงปัจจุบันใน jookCast').setDescription(text).setColor('#9b5de5');
+        await interaction.editReply({ embeds: [embed] });
+      } catch (e: any) { await interaction.editReply(`❌ ผิดพลาด: ${e.message}`); }
+    }
+
+    if (commandName === 'nowplaying') {
+      await interaction.deferReply();
+      try {
+        const songs = await getPlaylistSongs(1);
+        if (songs.length === 0) return interaction.editReply('🔇 ไม่มีเพลงออนแอร์อยู่ครับ');
+        const cur = songs[0]?.snippet;
+        const embed = new EmbedBuilder().setTitle('📻 กำลังออนแอร์').setDescription(`🎵 **${cur?.title}**`).setColor('#00f5d4');
+        await interaction.editReply({ embeds: [embed] });
+      } catch (e: any) { await interaction.editReply(`❌ ผิดพลาด: ${e.message}`); }
+    }
+
+    if (commandName === 'voteskip') {
+      await interaction.deferReply();
+      try {
+        const songs = await getPlaylistSongs(1);
+        if (songs.length === 0) return interaction.editReply('❌ ไม่มีเพลงให้ข้ามจ้า');
+        const uId = interaction.user.id;
+        if (voteSkipUsers.has(uId)) return interaction.editReply(`⚠️ คุณเคยโหวตเพลงนี้ไปแล้ว (${voteSkipUsers.size}/${REQUIRED_VOTES})`);
+        voteSkipUsers.add(uId);
+        if (voteSkipUsers.size >= REQUIRED_VOTES) {
+          await removeSongFromPlaylist(songs[0]?.id!);
+          voteSkipUsers.clear();
+          await checkAndAutoFillQueue();
+          await interaction.editReply(`⏭️ **คะแนนเสียงครบ!** ข้ามเพลงเก่าให้เรียบร้อยแล้วจ้า!`);
+        } else {
+          await interaction.editReply(`🗳️ ต้องการคนโหวตเพิ่ม! (**${voteSkipUsers.size}/${REQUIRED_VOTES}**)`);
+        }
+      } catch (e: any) { await interaction.editReply(`❌ โหวตล้มเหลว: ${e.message}`); }
+    }
+
+    if (commandName === 'lucky') {
+      await interaction.deferReply();
+      const fun = ['https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'https://www.youtube.com/watch?v=kJQP7kiw5Fk'];
+      const vId = extractVideoId(fun[Math.floor(Math.random() * fun.length)]!)!;
+      try {
+        const snip = await addSongToPlaylist(vId); voteSkipUsers.clear();
+        await interaction.editReply(`🎲 **ตู้เพลงสุ่มนำโชคระเบิด!** เพิ่มเพลงฮิต:\n🎵 **ชื่อเพลง:** ${snip?.title}`);
+      } catch (e: any) { await interaction.editReply(`❌ สุ่มล้มเหลว: ${e.message}`); }
+    }
+
+    if (commandName === 'remove') {
+      await interaction.deferReply({ ephemeral: true });
+      const idx = interaction.options.getInteger('index', true);
+      try {
+        const songs = await getPlaylistSongs(20);
+        if (idx < 1 || idx > songs.length) return interaction.editReply(`❌ ลำดับไม่ถูกต้อง`);
+        
+        // ✨ วิธีแก้: ดึงไอเทมอกมาเช็คก่อนว่ามีอยู่จริงไหม (Type Guard)
+        const targetSong = songs[idx - 1];
+        if (!targetSong || !targetSong.id) {
+          return interaction.editReply(`❌ ไม่พบข้อมูลเพลงในลำดับดังกล่าว`);
+        }
+
+        await removeSongFromPlaylist(targetSong.id);
+        await interaction.editReply(`🗑️ ลบเพลงลำดับที่ ${idx} เรียบร้อย`);
+      } catch (e: any) { await interaction.editReply(`❌ ลบเพลงล้มเหลว: ${e.message}`); }
+    }
+
+    if (commandName === 'clear_queue') {
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        let songs = await getPlaylistSongs(50);
+        while (songs.length > 0) {
+          for (const s of songs) { await removeSongFromPlaylist(s.id!); }
+          songs = await getPlaylistSongs(50);
+        }
+        voteSkipUsers.clear();
+        await interaction.editReply('🧹 เคลียร์เพลงเกลี้ยงตู้เรียบร้อยครับ');
+      } catch (e: any) { await interaction.editReply(`❌ ล้มเหลว: ${e.message}`); }
     }
   }
 
-  // 📊 /jookcast_status [Admin]
-  if (commandName === 'jookcast_status') {
-    await interaction.deferReply({ ephemeral: true });
-    const config = loadConfig();
-    try {
-      const youtube = getYouTubeClient();
-      let totalSongs = 0;
-      if (config.playlistId) {
-        const res = await youtube.playlists.list({ part: ['contentDetails'], id: [config.playlistId] });
-        totalSongs = res.data.items?.[0]?.contentDetails?.itemCount || 0;
+  // 2. 🎵 จัดการตอนผู้ใช้คลิกเลือกช้อยส์ใน Dropdown Menu ของคำสั่ง /search
+ if (interaction.isStringSelectMenu()) {
+    if (interaction.customId === 'search-select') {
+      // ✨ วิธีแก้: ทำตัวแปรสำรองมารองรับ และเช็คว่ามีค่าส่งมาจริงไหม
+      const selectedVideoId = interaction.values?.[0];
+      if (!selectedVideoId) {
+        return interaction.reply({ content: '❌ เกิดข้อผิดพลาดในการดึงรหัสเพลง ยินดีให้ลองกดค้นหาใหม่อีกครั้งครับ', ephemeral: true });
       }
-      await interaction.editReply(`📊 **สถานะระบบ jookCast คลาวด์**\n🟢 บอทสแตนด์บาย: 24 ชั่วโมง\n📂 ไอดีตู้เพลง: \`${config.playlistId || 'ยังไม่มี'}\`\n🎵 มีเพลงในตู้ทั้งหมด: \`${totalSongs}\` เพลง\n🤖 โหมดป้องกันตู้เหงา (Auto-Fill): เปิดใช้งาน (ดึงวิดีโอมาแรงหมวดดนตรี TH)`);
-    } catch (error: any) {
-      await interaction.editReply(`❌ ดึงสถานะล้มเหลว: ${error.message}`);
+
+      await interaction.deferReply(); 
+
+      try {
+        const snippet = await addSongToPlaylist(selectedVideoId);
+        let successMessage = `🎶 **<@${interaction.user.id}>** ได้เลือกเพลงหยอดเข้าตู้เรียบร้อย!\n🎵 **ชื่อเพลง:** ${snippet?.title}\n🔗 ลิงก์: https://youtu.be/${selectedVideoId}`;
+        
+        voteSkipUsers.clear();
+        const autoFilled = await checkAndAutoFillQueue();
+        if (autoFilled.length > 0) {
+          successMessage += `\n🤖 *[Auto-Fill]* คิวเพลงเหลือน้อย บอทจึงดึงวิดีโอเทรนด์ฮิตเติมพ่วงหลังให้ทันที!`;
+        }
+
+        await interaction.editReply(successMessage);
+        await interaction.followUp({ content: '✅ เพิ่มลงคิวตู้เพลงหลักสำเร็จแล้ว!', ephemeral: true });
+      } catch (error: any) {
+        await interaction.editReply(`❌ ไม่สามารถเพิ่มเพลงเข้าคิวได้: ${error.message}`);
+      }
     }
-  }
-
-  // SETUP COMMANDS 
-  if (commandName === 'setup_host') {
-    try {
-      const oAuth2Client = getYouTubeOAuth2Client();
-      const authUrl = oAuth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: 'consent' });
-      await interaction.reply({ content: `🔑 **ขั้นตอนการตั้งค่า Host สำหรับ jookCast:**\n1. ล็อกอินสิทธิ์: [คลิกที่นี่](${authUrl})\n2. นำหน้าเว็บขาวมาส่งต่อด้วยคำสั่ง \`/submit_code\``, ephemeral: true });
-    } catch (error: any) { await interaction.reply({ content: `❌ เกิดข้อผิดพลาด: ${error.message}`, ephemeral: true }); }
-  }
-
-  if (commandName === 'submit_code') {
-    await interaction.deferReply({ ephemeral: true });
-    let input = interaction.options.getString('code_or_url', true).trim();
-    let code = input.includes('code=') ? new URL(input).searchParams.get('code') ?? input : input;
-    try {
-      const oAuth2Client = getYouTubeOAuth2Client();
-      const { tokens } = await oAuth2Client.getToken(code);
-      fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens, null, 2), 'utf8');
-      await interaction.editReply('🎉 **สำเร็จ!** เชื่อมต่อบัญชีเข้ากับระบบ jookCast Host เรียบร้อยแล้วครับ!');
-    } catch (error: any) { await interaction.editReply('❌ รหัสหมดอายุ กรุณากด `/setup_host` ใหม่ครับ'); }
-  }
-
-  if (commandName === 'set_playlist') {
-    const newPlaylistId = interaction.options.getString('playlist_id', true).trim();
-    const config = loadConfig(); config.playlistId = newPlaylistId; saveConfig(config);
-    await interaction.reply({ content: `✅ เปลี่ยนตู้เพลง jookCast ไปที่ Playlist ID: \`${newPlaylistId}\` สำเร็จ!`, ephemeral: true });
-  }
-
-  if (commandName === 'create_playlist') {
-    await interaction.deferReply({ ephemeral: true });
-    const playlistName = interaction.options.getString('name', true).trim();
-    const privacy = interaction.options.getString('privacy') ?? 'unlisted';
-    try {
-      const generatedId = await createNewYouTubePlaylist(playlistName, privacy);
-      if (!generatedId) throw new Error('ไม่ได้รับไอดีกลับมาจาก YouTube');
-      const config = loadConfig(); config.playlistId = generatedId; saveConfig(config);
-      await interaction.editReply(`✨ **สร้างคิวเพลง jookCast ใหม่สำเร็จ!**\n📂 **ชื่อ:** \`${playlistName}\`\n🆔 **ID:** \`${generatedId}\`\n🔗 **ลิงก์คาสต์ขึ้นจอ:** https://www.youtube.com/playlist?list=${generatedId}`);
-    } catch (error: any) { await interaction.editReply(`❌ สร้างล้มเหลว: ${error.message}`); }
   }
 });
 
+// 🌐 พอร์ตสแตนด์บายจำลองของ Render
 const PORT = process.env.PORT ?? '10000';
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('jookCast is running and casting music! 🎙️🎵');
-}).listen(PORT, () => { console.log(`🌐 สแตนด์บายพอร์ตจำลองที่ช่อง ${PORT}`); });
+  res.end(`jookCast ${BOT_VERSION} is working!`);
+}).listen(PORT);
 
-if (!DISCORD_TOKEN) console.error('❌ ไม่พบ DISCORD_TOKEN ในไฟล์ .env');
+if (!DISCORD_TOKEN) console.error('❌ ไม่พบ DISCORD_TOKEN');
 else client.login(DISCORD_TOKEN);
