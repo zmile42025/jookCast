@@ -31,7 +31,6 @@ const CONFIG_PATH = path.join(__dirname, 'config.json');
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const SCOPES = ['https://www.googleapis.com/auth/youtube'];
 
-// 📝 เวอร์ชันและบันทึกการอัปเดตระบบ
 const BOT_VERSION = 'v2.6.5';
 const RELEASE_NOTES = `✨ **มีอะไรใหม่ในเวอร์ชัน ${BOT_VERSION}**\n- 🤫 **Silent Log System:** ย้ายข้อความแจ้งเตือนแอดเพลงแยกไปที่ช่อง \`#jookcast-feed\` แบบเงียบกริบ ไม่มีเสียงตึ๊ง ไม่เปิดไฟแดงรบกวนใคร\n- 📖 ช่อง \`#jookcast-status\` สำหรับเก็บคู่มือการใช้งานและประวัติอัปเดตบอทให้อ่านง่าย ไม่ปนกับข้อความอื่น\n- ⚙️ **Full Admin Suite:** นำระบบจัดการ OAuth Setup และ Playlist Creator กลับมาทำงานร่วมกันแบบ 100%`;
 
@@ -44,7 +43,11 @@ interface BotConfig {
 
 function loadConfig(): BotConfig {
   if (fs.existsSync(CONFIG_PATH)) {
-    try { return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch { return { playlistId: process.env.PLAYLIST_ID ?? null }; }
+    try { 
+      return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); 
+    } catch { 
+      return { playlistId: process.env.PLAYLIST_ID ?? null }; 
+    }
   }
   return { playlistId: process.env.PLAYLIST_ID ?? null };
 }
@@ -62,14 +65,19 @@ const client = new Client({
 });
 
 function getYouTubeOAuth2Client() {
-  if (!fs.existsSync(CREDENTIALS_PATH)) throw new Error('ไม่พบไฟล์ credentials.json ในเครื่อง กรุณาใส่ไฟล์ก่อนรันบอท');
+  if (!fs.existsSync(CREDENTIALS_PATH)) {
+    throw new Error('ไม่พบไฟล์ credentials.json ในเครื่อง กรุณาใส่ไฟล์ก่อนรันบอท');
+  }
   const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8'));
   const { client_secret, client_id, redirect_uris } = credentials.installed;
   return new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
 }
 
+// ปรับให้รองรับทั้งการล็อกอินผ่านดิสคอร์ดและหน้าเว็บ
 function getYouTubeClient() {
-  if (!fs.existsSync(TOKEN_PATH)) throw new Error('บอทยังไม่ได้ล็อกอินบัญชี YouTube Host กรุณาใช้คำสั่ง `/setup_host` บน Discord หรือเข้าผ่านหน้าเว็บ');
+  if (!fs.existsSync(TOKEN_PATH)) {
+    throw new Error('บอทยังไม่ได้ล็อกอินบัญชี YouTube Host กรุณาใช้คำสั่ง `/setup_host` บน Discord หรือผูกบัญชีผ่านหน้าเว็บ');
+  }
   const oAuth2Client = getYouTubeOAuth2Client();
   const token = JSON.parse(fs.readFileSync(TOKEN_PATH, 'utf8'));
   oAuth2Client.setCredentials(token);
@@ -178,7 +186,7 @@ async function checkAndAutoFillQueue(): Promise<string[]> {
   return [];
 }
 
-// ─── ระบบแยกช่องสัญญาณแชทอัตโนมัติ (Multi-Channel Setup) ──────────────────────────
+// ─── ระบบตรวจสอบ/สร้างช่องสัญญาณแยกอัตโนมัติ ─────────────────────────────────────
 
 async function setupStatusChannelAndNotify(client: Client) {
   const STATUS_CHANNEL = 'jookcast-status';
@@ -186,7 +194,6 @@ async function setupStatusChannelAndNotify(client: Client) {
   
   for (const guild of client.guilds.cache.values()) {
     try {
-      // 1. ตรวจสอบ/สร้างช่องคู่มือ #jookcast-status (Read-Only)
       let statusChan = guild.channels.cache.find(ch => ch.name === STATUS_CHANNEL && ch.isTextBased()) as TextChannel;
       if (!statusChan) {
         statusChan = await guild.channels.create({
@@ -195,7 +202,6 @@ async function setupStatusChannelAndNotify(client: Client) {
         });
       }
 
-      // 2. ตรวจสอบ/สร้างช่องประวัติเพลงแอด #jookcast-feed (Read-Only)
       let feedChan = guild.channels.cache.find(ch => ch.name === FEED_CHANNEL && ch.isTextBased()) as TextChannel;
       if (!feedChan) {
         await guild.channels.create({
@@ -205,7 +211,6 @@ async function setupStatusChannelAndNotify(client: Client) {
         });
       }
 
-      // 3. ส่งบอร์ดคู่มือเข้าช่องสเตตัส (ถ้ายังไม่เคยมี)
       const messages = await statusChan.messages.fetch({ limit: 10 });
       const hasWelcomeMessage = messages.some(msg => msg.embeds.some(emb => emb.title?.includes('คู่มือการใช้งาน')));
       
@@ -226,7 +231,6 @@ async function setupStatusChannelAndNotify(client: Client) {
         await statusChan.send({ embeds: [welcomeEmbed] });
       }
 
-      // 4. แจ้งเตือนอัปเดตระบบ (Release Notes) หากเลขเวอร์ชันใหม่ขึ้น
       const isAlreadyNotified = messages.some(msg => msg.embeds.some(emb => emb.title?.includes(BOT_VERSION)));
       if (!isAlreadyNotified) {
         const updateEmbed = new EmbedBuilder()
@@ -239,7 +243,7 @@ async function setupStatusChannelAndNotify(client: Client) {
       }
 
     } catch (err) {
-      console.error(`❌ ไม่สามารถตั้งค่าแชนเนลระบบได้:`, err);
+      console.error(`⚠️ ไม่สามารถตั้งค่าแชนเนลระบบในกิลด์ ${guild.name} ได้ (อาจจะขาดสิทธิ์การจัดการแชนเนล):`);
     }
   }
 }
@@ -258,7 +262,6 @@ const commands = [
   new SlashCommandBuilder().setName('voteskip').setDescription('ร่วมโหวตข้ามเพลงกร่อยที่อยู่หัวคิวปัจจุบัน'),
   new SlashCommandBuilder().setName('lucky').setDescription('ระบบสุ่มเพลงขำๆ เข้าตู้ jookCast ดับเหงา'),
   
-  // ⚙️ [Admin Only Suite] นำกลับมาประจำการครบชุด
   new SlashCommandBuilder().setName('setup_host').setDescription('[Admin Only] ขอลิงก์ล็อกอินยืนยันสิทธิ์สำหรับ Host')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   
@@ -294,9 +297,16 @@ const commands = [
 client.once('ready', async () => {
   console.log(`🎙️ บอท jookCast ${BOT_VERSION} พร้อมใช้งานแล้ว!`);
   if (client.user?.id) {
-    const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN!);
-    await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-    await setupStatusChannelAndNotify(client);
+    try {
+      const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN!);
+      await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+      console.log('✅ ลงทะเบียนคำสั่ง Slash Commands ทั้งหมดสำเร็จแล้ว!');
+      
+      // เรียกใช้ระบบตรวจสอบช่องสัญญาณโดยครอบเพื่อกันแครชจาก Missing Permissions
+      await setupStatusChannelAndNotify(client);
+    } catch (err) {
+      console.error('❌ ข้อผิดพลาดในขั้นตอนเปิดระบบแรดดี้:', err);
+    }
   }
 });
 
@@ -306,14 +316,13 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.isChatInputCommand()) {
     const { commandName } = interaction;
 
-    // 🔍 สั่งค้นหาเพลง (ผลลัพธ์เห็นคนเดียว)
     if (commandName === 'search') {
       const keyword = interaction.options.getString('keyword', true).trim();
       await interaction.deferReply({ ephemeral: true });
 
       try {
         const videos = await searchYouTubeFiveVideos(keyword);
-        if (videos.length === 0) return interaction.editReply(`❌ 不พบผลลัพธ์สำหรับคำว่า: \`${keyword}\``);
+        if (videos.length === 0) return interaction.editReply(`❌ ไม่พบผลลัพธ์สำหรับคำว่า: \`${keyword}\``);
 
         const selectMenu = new StringSelectMenuBuilder()
           .setCustomId('search-select')
@@ -339,10 +348,11 @@ client.on('interactionCreate', async (interaction) => {
           content: `🔍 **ผลลัพธ์การค้นหาสำหรับ:** \`${keyword}\`\n*(ข้อความเมนูนี้เห็นแค่คุณคนเดียว เลือกเสร็จแล้วระบบจะไปบันทึกเงียบๆ ที่ช่องฟีดครับ)*`,
           components: [row]
         });
-      } catch (error: any) { await interaction.editReply(`❌ ค้นหาล้มเหลว: ${error.message}`); }
+      } catch (error: any) { 
+        await interaction.editReply(`❌ ค้นหาล้มเหลว: ${error.message}`); 
+      }
     }
 
-    // 🔗 สั่งแอดเพลงตรงๆ ผ่านลิงก์
     if (commandName === 'add') {
       const url = interaction.options.getString('url', true).trim();
       const videoId = extractVideoId(url);
@@ -356,13 +366,15 @@ client.on('interactionCreate', async (interaction) => {
         
         voteSkipUsers.clear();
         const autoFilled = await checkAndAutoFillQueue();
-        if (autoFilled.length > 0) logMessage += `\n🤖 *[Auto-Fill]* คิวเพลงเหลือน้อย บอทช่วยเติมเพลงฮิตพ่วงท้ายให้แล้วครับ`;
+        if (autoFilled.length > 0) logMessage += `\n🤖 *[Auto-Fill]* คิวเพลงเหลือน้อย บอทช่วยเติมเพลงฮิตพ่วงท้ายให้เรียบร้อยครับ`;
 
         const feedChannel = interaction.guild?.channels.cache.find(ch => ch.name === 'jookcast-feed' && ch.isTextBased()) as TextChannel;
         if (feedChannel) {
           await feedChannel.send({ content: logMessage, flags: [4096] });
         }
-      } catch (error: any) { console.error(error); }
+      } catch (error: any) { 
+        console.error('❌ การแอดเพลงด้วยลิงก์ผิดพลาด:', error); 
+      }
     }
 
     if (commandName === 'queue') {
@@ -371,11 +383,20 @@ client.on('interactionCreate', async (interaction) => {
         const autoFilled = await checkAndAutoFillQueue();
         const songs = await getPlaylistSongs(10);
         if (songs.length === 0) return interaction.editReply('📭 ตู้เพลงว่างเปล่าจ้า พิมพ์ `/search` มาเปิดเพลงสิ!');
+        
         let text = songs.map((s, i) => `${i + 1}. **${s.snippet?.title}**`).join('\n');
         if (autoFilled.length > 0) text += `\n\n🤖 *[Auto-Fill]* เพลงคิวใกล้หมด เติมเทรนด์ติดอันดับ TH เพิ่มให้เรียบร้อย`;
-        const embed = new EmbedBuilder().setTitle('📋 คิวเพลงปัจจุบันใน jookCast').setDescription(text).setColor('#9b5de5').setFooter({ text: `แสดงทั้งหมด ${songs.length} เพลงล่าสุด` });
+        
+        const embed = new EmbedBuilder()
+          .setTitle('📋 คิวเพลงปัจจุบันใน jookCast')
+          .setDescription(text)
+          .setColor('#9b5de5')
+          .setFooter({ text: `แสดงทั้งหมด ${songs.length} เพลงล่าสุด` });
+          
         await interaction.editReply({ embeds: [embed] });
-      } catch (e: any) { await interaction.editReply(`❌ ผิดพลาด: ${e.message}`); }
+      } catch (e: any) { 
+        await interaction.editReply(`❌ ผิดพลาด: ${e.message}`); 
+      }
     }
 
     if (commandName === 'nowplaying') {
@@ -390,7 +411,9 @@ client.on('interactionCreate', async (interaction) => {
           .setThumbnail(cur?.thumbnails?.high?.url || cur?.thumbnails?.default?.url || null)
           .setColor('#00f5d4');
         await interaction.editReply({ embeds: [embed] });
-      } catch (e: any) { await interaction.editReply(`❌ ผิดพลาด: ${e.message}`); }
+      } catch (e: any) { 
+        await interaction.editReply(`❌ ผิดพลาด: ${e.message}`); 
+      }
     }
 
     if (commandName === 'voteskip') {
@@ -399,8 +422,10 @@ client.on('interactionCreate', async (interaction) => {
         const songs = await getPlaylistSongs(1);
         if (songs.length === 0) return interaction.editReply('❌ ไม่มีเพลงให้ข้ามจ้า');
         const uId = interaction.user.id;
+        
         if (voteSkipUsers.has(uId)) return interaction.editReply(`⚠️ คุณเคยโหวตเพลงนี้ไปแล้ว (${voteSkipUsers.size}/${REQUIRED_VOTES})`);
         voteSkipUsers.add(uId);
+        
         if (voteSkipUsers.size >= REQUIRED_VOTES) {
           await removeSongFromPlaylist(songs[0]?.id!);
           voteSkipUsers.clear();
@@ -409,7 +434,9 @@ client.on('interactionCreate', async (interaction) => {
         } else {
           await interaction.editReply(`🗳️ ต้องการคนโหวตเพิ่ม! (**${voteSkipUsers.size}/${REQUIRED_VOTES}**)`);
         }
-      } catch (e: any) { await interaction.editReply(`❌ โหวตล้มเหลว: ${e.message}`); }
+      } catch (e: any) { 
+        await interaction.editReply(`❌ โหวตล้มเหลว: ${e.message}`); 
+      }
     }
 
     if (commandName === 'lucky') {
@@ -417,12 +444,14 @@ client.on('interactionCreate', async (interaction) => {
       const fun = ['https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'https://www.youtube.com/watch?v=kJQP7kiw5Fk', 'https://www.youtube.com/watch?v=9bZkp7q19f0'];
       const vId = extractVideoId(fun[Math.floor(Math.random() * fun.length)]!)!;
       try {
-        const snip = await addSongToPlaylist(vId); voteSkipUsers.clear();
+        const snip = await addSongToPlaylist(vId); 
+        voteSkipUsers.clear();
         await interaction.editReply(`🎲 **ตู้เพลงสุ่มนำโชคระเบิด!** เพิ่มเพลงลงคิวแล้ว:\n🎵 **ชื่อเพลง:** ${snip?.title}`);
-      } catch (e: any) { await interaction.editReply(`❌ สุ่มล้มเหลว: ${e.message}`); }
+      } catch (e: any) { 
+        await interaction.editReply(`❌ สุ่มล้มเหลว: ${e.message}`); 
+      }
     }
 
-    // ✂️ /remove [Admin Only]
     if (commandName === 'remove') {
       await interaction.deferReply({ ephemeral: true });
       const idx = interaction.options.getInteger('index', true);
@@ -433,10 +462,11 @@ client.on('interactionCreate', async (interaction) => {
         const targetSong = songs[idx - 1];
         await removeSongFromPlaylist(targetSong?.id!);
         await interaction.editReply(`🗑️ ดีดเพลงลำดับที่ ${idx}: **${targetSong?.snippet?.title}** ออกจากคิวเรียบร้อยครับ`);
-      } catch (e: any) { await interaction.editReply(`❌ ลบเพลงล้มเหลว: ${e.message}`); }
+      } catch (e: any) { 
+        await interaction.editReply(`❌ ลบเพลงล้มเหลว: ${e.message}`); 
+      }
     }
 
-    // 🧹 /clear_queue [Admin Only]
     if (commandName === 'clear_queue') {
       await interaction.deferReply({ ephemeral: true });
       try {
@@ -448,10 +478,11 @@ client.on('interactionCreate', async (interaction) => {
         }
         voteSkipUsers.clear();
         await interaction.editReply('🧹 **กวาดล้างตู้สำเร็จ!** เคลียร์เพลงทั้งหมดออกจาก Playlist เรียบร้อยแล้วครับ');
-      } catch (e: any) { await interaction.editReply(`❌ ล้มเหลว: ${e.message}`); }
+      } catch (e: any) { 
+        await interaction.editReply(`❌ ล้มเหลว: ${e.message}`); 
+      }
     }
 
-    // 📊 /jookcast_status [Admin Only]
     if (commandName === 'jookcast_status') {
       await interaction.deferReply({ ephemeral: true });
       const config = loadConfig();
@@ -463,19 +494,21 @@ client.on('interactionCreate', async (interaction) => {
           totalSongs = res.data.items?.[0]?.contentDetails?.itemCount || 0;
         }
         await interaction.editReply(`📊 **สถานะระบบ jookCast คลาวด์**\n🟢 บอทสแตนด์บาย: 24 ชั่วโมง\n📂 ไอดีตู้เพลง: \`${config.playlistId || "ยังไม่มี"}\`\n🎵 มีเพลงในตู้ทั้งหมด: \`${totalSongs}\` เพลง`);
-      } catch (error: any) { await interaction.editReply(`❌ ดึงสถานะล้มเหลว: ${error.message}`); }
+      } catch (error: any) { 
+        await interaction.editReply(`❌ ดึงสถานะล้มเหลว: ${error.message}`); 
+      }
     }
 
-    // 🔑 /setup_host [Admin Only]
     if (commandName === 'setup_host') {
       try {
         const oAuth2Client = getYouTubeOAuth2Client();
         const authUrl = oAuth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: 'consent' });
         await interaction.reply({ content: `🔑 **ขั้นตอนการตั้งค่า Host สำหรับ jookCast:**\n1. ล็อกอินสิทธิ์: [คลิกที่นี่](${authUrl})\n2. นำหน้าเว็บขาวมาส่งต่อด้วยคำสั่ง \`/submit_code\``, ephemeral: true });
-      } catch (error: any) { await interaction.reply({ content: `❌ เกิดข้อผิดพลาด: ${error.message}`, ephemeral: true }); }
+      } catch (error: any) { 
+        await interaction.reply({ content: `❌ เกิดข้อผิดพลาด: ${error.message}`, ephemeral: true }); 
+      }
     }
 
-    // 📥 /submit_code [Admin Only]
     if (commandName === 'submit_code') {
       await interaction.deferReply({ ephemeral: true });
       let input = interaction.options.getString('code_or_url', true).trim();
@@ -485,10 +518,11 @@ client.on('interactionCreate', async (interaction) => {
         const { tokens } = await oAuth2Client.getToken(code);
         fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens, null, 2), 'utf8');
         await interaction.editReply('🎉 **สำเร็จ!** เชื่อมต่อบัญชีเข้ากับระบบ jookCast Host เรียบร้อยแล้วครับ!');
-      } catch (error: any) { await interaction.editReply('❌ รหัสหมดอายุ กรุณากด `/setup_host` ใหม่หรือใช้ระบบล็อกอินหน้าเว็บครับ'); }
+      } catch (error: any) { 
+        await interaction.editReply('❌ รหัสหมดอายุ กรุณากด `/setup_host` ใหม่หรือใช้ระบบล็อกอินหน้าเว็บครับ'); 
+      }
     }
 
-    // ⚙️ /set_playlist [Admin Only]
     if (commandName === 'set_playlist') {
       const newPlaylistId = interaction.options.getString('playlist_id', true).trim();
       const config = loadConfig();
@@ -497,7 +531,6 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.reply({ content: `✅ เปลี่ยนตู้เพลง jookCast ไปที่ Playlist ID: \`${newPlaylistId}\` สำเร็จ!`, ephemeral: true });
     }
 
-    // 🔨 /create_playlist [Admin Only]
     if (commandName === 'create_playlist') {
       await interaction.deferReply({ ephemeral: true });
       const playlistName = interaction.options.getString('name', true).trim();
@@ -509,11 +542,12 @@ client.on('interactionCreate', async (interaction) => {
         config.playlistId = generatedId;
         saveConfig(config);
         await interaction.editReply(`✨ **สร้างคิวเพลง jookCast ใหม่สำเร็จ!**\n📂 **ชื่อ:** \`${playlistName}\`\n🆔 **ID:** \`${generatedId}\`\n🔗 **ลิงก์คาสต์ขึ้นจอ:** https://www.youtube.com/playlist?list=${generatedId}`);
-      } catch (error: any) { await interaction.editReply(`❌ สร้างล้มเหลว: ${error.message}`); }
+      } catch (error: any) { 
+        await interaction.editReply(`❌ สร้างล้มเหลว: ${error.message}`); 
+      }
     }
   }
 
-  // 🎵 ดรอปดาวน์เมนูจากการพิมพ์ /search
   if (interaction.isStringSelectMenu()) {
     if (interaction.customId === 'search-select') {
       const selectedVideoId = interaction.values?.[0];
@@ -533,7 +567,9 @@ client.on('interactionCreate', async (interaction) => {
         if (feedChannel) {
           await feedChannel.send({ content: logMessage, flags: [4096] });
         }
-      } catch (error: any) { console.error('❌ ดึงข้อมูลเข้าเพลย์ลิสต์พลาด:', error); }
+      } catch (error: any) { 
+        console.error('❌ ดึงข้อมูลเข้าเพลย์ลิสต์พลาด:', error); 
+      }
     }
   }
 });
@@ -544,7 +580,6 @@ const PORT = process.env.PORT ?? '10000';
 http.createServer(async (req, res) => {
   const parsedUrl = urlModule.parse(req.url || '', true);
 
-  // 1. หน้าล็อกอินหลักเริ่มต้นส่งไปขอ Token จาก Google
   if (parsedUrl.pathname === '/api/auth') {
     try {
       const oAuth2Client = getYouTubeOAuth2Client();
@@ -558,7 +593,6 @@ http.createServer(async (req, res) => {
     return;
   }
 
-  // 2. แชนแนล Callback รับโค้ดมาแลกเป็น Token เก็บถาวรลงเครื่อง
   if (parsedUrl.pathname === '/api/callback') {
     const code = parsedUrl.query.code as string;
     if (!code) {
@@ -581,7 +615,6 @@ http.createServer(async (req, res) => {
     return;
   }
 
-  // เส้นดักสแตนบายสถานะเว็บ Render ทั่วไป
   res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
   res.end(`jookCast Status: ${BOT_VERSION} is standing by! 🎙️🎵 (เข้าลิงก์ /api/auth เพื่อผูกบัญชี YouTube Host)`);
 }).listen(PORT, () => {
