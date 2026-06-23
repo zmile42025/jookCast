@@ -597,8 +597,10 @@ const PORT = process.env.PORT ?? '10000';
 
 http.createServer(async (req, res) => {
   const parsedUrl = urlModule.parse(req.url || '', true);
+  // ✨ จุดแก้ตายตัว: ทำความสะอาด URL เผื่อมีเครื่องหมาย // หลุดเข้ามา เพื่อให้ทำงานได้ทั้งคู่
+  const cleanPathname = parsedUrl.pathname?.replace(/\/+/g, '/');
 
-  if (parsedUrl.pathname === '/api/auth') {
+  if (cleanPathname === '/api/auth') {
     try {
       const oAuth2Client = getYouTubeOAuth2Client();
       const authUrl = oAuth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: 'consent' });
@@ -611,7 +613,7 @@ http.createServer(async (req, res) => {
     return;
   }
 
-  if (parsedUrl.pathname === '/api/callback') {
+  if (cleanPathname === '/api/callback') {
     const code = parsedUrl.query.code as string;
     if (!code) {
       res.writeHead(400, { 'Content-Type': 'text/plain' });
@@ -645,6 +647,3 @@ http.createServer(async (req, res) => {
 }).listen(PORT, () => {
   console.log(`🌐 Web Server Automation Live on Port ${PORT}`);
 });
-
-if (!DISCORD_TOKEN) console.error('❌ ไม่พบ DISCORD_TOKEN ในระบบ Environment');
-else client.login(DISCORD_TOKEN);
