@@ -9,7 +9,8 @@ import {
   ActionRowBuilder, 
   StringSelectMenuBuilder, 
   StringSelectMenuOptionBuilder,
-  TextChannel
+  TextChannel,
+  Guild
 } from 'discord.js';
 import { google } from 'googleapis';
 import fs from 'fs';
@@ -31,11 +32,11 @@ const CONFIG_PATH = path.join(__dirname, 'config.json');
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const SCOPES = ['https://www.googleapis.com/auth/youtube'];
 
-// 🎵 ไอดีวิดีโอสำหรับใช้เป็นเพลงเปิดสถานีสแตนด์บายบนแท็บเล็ต (สามารถเปลี่ยนไอดีวิดีโอ YouTube อื่นที่ชอบได้ตรงนี้ครับ)
+// 🎵 ไอดีวิดีโอสำหรับใช้เป็นเพลงเปิดสถานีสแตนด์บายบนแท็บเล็ต
 const INTRO_VIDEO_ID = 'kJQP7kiw5Fk'; 
 
-const BOT_VERSION = 'v2.7.0';
-const RELEASE_NOTES = `✨ **มีอะไรใหม่ในเวอร์ชัน ${BOT_VERSION}**\n- 🔄 **OAuth 2.0 Full Automation:** ล็อกอินเสร็จระบบซิงค์ Token หลังบ้านให้ทันที ไม่ต้องก๊อปวางรหัสโค้ดอีกต่อไป (ตัดคำสั่ง \`/submit_code\` ออก)\n- ✂️ **Clean Up:** ตัดคำสั่ง \`/lucky\` ออกถาวรเพื่อลดความซับซ้อนของคำสั่ง\n- 📻 **Auto-Embed Intro:** เมื่อสั่งสร้างเพลย์ลิสต์ใหม่ บอทจะหยอดเพลงเปิดสถานีให้ทันที 1 เพลง เพื่อให้หน้าจอแท็บเล็ตเปิดรันแช่รอไว้ได้เลย`;
+const BOT_VERSION = 'v2.7.5';
+const RELEASE_NOTES = `✨ **มีอะไรใหม่ในเวอร์ชัน ${BOT_VERSION}**\n- 🤝 **Auto-Setup on Join:** เพิ่มระบบตื่นตัวอัจฉริยะ ทันทีที่บอทถูกเชิญเข้าเซิร์ฟเวอร์ใหม่ จะทำการสร้างช่อง \`#jookcast-status\` และ \`#jookcast-feed\` พร้อมยิงคู่มือการใช้งานให้ทันทีอัตโนมัติหน้างานโดยไม่ต้องรีสตาร์ทบอทหลังบ้านครับ!`;
 
 let voteSkipUsers = new Set<string>();
 const REQUIRED_VOTES = 3;
@@ -188,69 +189,74 @@ async function checkAndAutoFillQueue(): Promise<string[]> {
   return [];
 }
 
-// ─── ระบบตั้งค่าแชนเนลฟีดและสเตตัส ──────────────────────────────────────────
+// ─── ระบบฟังก์ชันตั้งค่าช่องสัญญาณ (สร้างโมดูลย่อยให้เรียกซ้ำแยกตามกิลด์ได้) ───
 
-async function setupStatusChannelAndNotify(client: Client) {
+async function setupSingleGuildChannels(guild: Guild) {
   const STATUS_CHANNEL = 'jookcast-status';
   const FEED_CHANNEL = 'jookcast-feed';
-  
-  for (const guild of client.guilds.cache.values()) {
-    try {
-      let statusChan = guild.channels.cache.find(ch => ch.name === STATUS_CHANNEL && ch.isTextBased()) as TextChannel;
-      if (!statusChan) {
-        statusChan = await guild.channels.create({
-          name: STATUS_CHANNEL,
-          permissionOverwrites: [{ id: guild.roles.everyone.id, deny: [PermissionFlagsBits.SendMessages], allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] }]
-        });
-      }
 
-      let feedChan = guild.channels.cache.find(ch => ch.name === FEED_CHANNEL && ch.isTextBased()) as TextChannel;
-      if (!feedChan) {
-        await guild.channels.create({
-          name: FEED_CHANNEL,
-          reason: 'ช่องสำหรับเก็บประวัติล็อกตู้เพลงแบบปิดเสียงแจ้งเตือน',
-          permissionOverwrites: [{ id: guild.roles.everyone.id, deny: [PermissionFlagsBits.SendMessages], allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] }]
-        });
-      }
-
-      const messages = await statusChan.messages.fetch({ limit: 10 });
-      const hasWelcomeMessage = messages.some(msg => msg.embeds.some(emb => emb.title?.includes('คู่มือการใช้งาน')));
-      
-      if (!hasWelcomeMessage) {
-        const welcomeEmbed = new EmbedBuilder()
-          .setTitle('🎙️ ตู้เพลงคลาวด์ jookCast - คู่มือการใช้งาน')
-          .setDescription('ระบบฝากส่งเพลงจาก Discord ไปเล่นบนหน้าจอหลักผ่านคลัง YouTube Playlist แบบเรียลไทม์!')
-          .setColor('#00f5d4')
-          .addFields(
-            { name: '🔍 ค้นหาเพลงอย่างเซียน', value: '`/search [ชื่อเพลง/ศิลปิน]` บอทจะแสดงเมนูให้เลือกเพลง (เห็นแค่คุณคนเดียว แชทไม่รก)', inline: false },
-            { name: '🔗 หยอดเพลงตรงด้วยลิงก์', value: '`/add [ลิงก์ YouTube]` แอดเข้าคิวตู้เพลงหลักทันที', inline: false },
-            { name: '📋 ตรวจสอบคิวเพลง', value: '`/queue` เช็คดูรายชื่อ 10 เพลงถัดไปในตู้', inline: true },
-            { name: '📻 ดูเพลงปัจจุบัน', value: '`/nowplaying` ดูเพลงที่กำลังออนแอร์', inline: true },
-            { name: '🗳️ โหวตข้ามเพลงกร่อย', value: '`/voteskip` ร่วมใจกันกดครบ 3 คน ดีดเพลงหัวคิวทิ้งทันที!', inline: false }
-          )
-          .setFooter({ text: 'jookCast Station' });
-        
-        await statusChan.send({ embeds: [welcomeEmbed] });
-      }
-
-      const isAlreadyNotified = messages.some(msg => msg.embeds.some(emb => emb.title?.includes(BOT_VERSION)));
-      if (!isAlreadyNotified) {
-        const updateEmbed = new EmbedBuilder()
-          .setTitle(`🚀 บอท jookCast อัปเกรดระบบเป็นเวอร์ชัน ${BOT_VERSION}!`)
-          .setDescription(RELEASE_NOTES)
-          .setColor('#9b5de5')
-          .setTimestamp();
-        
-        await statusChan.send({ embeds: [updateEmbed] });
-      }
-
-    } catch (err) {
-      console.error(`⚠️ ไม่สามารถตั้งค่าแชนเนลระบบในกิลด์ ${guild.name} ได้ (อาจจะขาดสิทธิ์การจัดการแชนเนล)`);
+  try {
+    let statusChan = guild.channels.cache.find(ch => ch.name === STATUS_CHANNEL && ch.isTextBased()) as TextChannel;
+    if (!statusChan) {
+      statusChan = await guild.channels.create({
+        name: STATUS_CHANNEL,
+        permissionOverwrites: [{ id: guild.roles.everyone.id, deny: [PermissionFlagsBits.SendMessages], allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] }]
+      });
     }
+
+    let feedChan = guild.channels.cache.find(ch => ch.name === FEED_CHANNEL && ch.isTextBased()) as TextChannel;
+    if (!feedChan) {
+      await guild.channels.create({
+        name: FEED_CHANNEL,
+        reason: 'ช่องสำหรับเก็บประวัติล็อกตู้เพลงแบบปิดเสียงแจ้งเตือน',
+        permissionOverwrites: [{ id: guild.roles.everyone.id, deny: [PermissionFlagsBits.SendMessages], allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] }]
+      });
+    }
+
+    const messages = await statusChan.messages.fetch({ limit: 10 });
+    const hasWelcomeMessage = messages.some(msg => msg.embeds.some(emb => emb.title?.includes('คู่มือการใช้งาน')));
+    
+    if (!hasWelcomeMessage) {
+      const welcomeEmbed = new EmbedBuilder()
+        .setTitle('🎙️ ตู้เพลงคลาวด์ jookCast - คู่มือการใช้งาน')
+        .setDescription('ระบบฝากส่งเพลงจาก Discord ไปเล่นบนหน้าจอหลักผ่านคลัง YouTube Playlist แบบเรียลไทม์!')
+        .setColor('#00f5d4')
+        .addFields(
+          { name: '🔍 ค้นหาเพลงอย่างเซียน', value: '`/search [ชื่อเพลง/ศิลปิน]` บอทจะแสดงเมนูให้เลือกเพลง (เห็นแค่คุณคนเดียว แชทไม่รก)', inline: false },
+          { name: '🔗 หยอดเพลงตรงด้วยลิงก์', value: '`/add [ลิงก์ YouTube]` แอดเข้าคิวตู้เพลงหลักทันที', inline: false },
+          { name: '📋 ตรวจสอบคิวเพลง', value: '`/queue` เช็คดูรายชื่อ 10 เพลงถัดไปในตู้', inline: true },
+          { name: '📻 ดูเพลงปัจจุบัน', value: '`/nowplaying` ดูเพลงที่กำลังออนแอร์', inline: true },
+          { name: '🗳️ โหวตข้ามเพลงกร่อย', value: '`/voteskip` ร่วมใจกันกดครบ 3 คน ดีดเพลงหัวคิวทิ้งทันที!', inline: false }
+        )
+        .setFooter({ text: 'jookCast Station' });
+      
+      await statusChan.send({ embeds: [welcomeEmbed] });
+    }
+
+    const isAlreadyNotified = messages.some(msg => msg.embeds.some(emb => emb.title?.includes(BOT_VERSION)));
+    if (!isAlreadyNotified) {
+      const updateEmbed = new EmbedBuilder()
+        .setTitle(`🚀 บอท jookCast อัปเกรดระบบเป็นเวอร์ชัน ${BOT_VERSION}!`)
+        .setDescription(RELEASE_NOTES)
+        .setColor('#9b5de5')
+        .setTimestamp();
+      
+      await statusChan.send({ embeds: [updateEmbed] });
+    }
+
+    console.log(`✅ ตั้งค่าระบบช่องสัญญาณเรียบร้อยสำหรับกิลด์: ${guild.name}`);
+  } catch (err) {
+    console.error(`⚠️ ไม่สามารถตั้งค่าแชนเนลระบบในกิลด์ ${guild.name} ได้ (อาจจะขาดสิทธิ์การจัดการแชนเนล)`);
   }
 }
 
-// ─── COMMANDS REGISTER (นำ /lucky และ /submit_code ออกเรียบร้อยครับ) ──────────
+async function setupAllGuildsChannels(client: Client) {
+  for (const guild of client.guilds.cache.values()) {
+    await setupSingleGuildChannels(guild);
+  }
+}
+
+// ─── COMMANDS REGISTER ──────────────────────────────────────────────────────
 
 const commands = [
   new SlashCommandBuilder().setName('add').setDescription('หยอดเพลงด้วยลิงก์ลงตู้คิว jookCast (ข้อความจะไปแจ้งเตือนเงียบๆ ที่ช่องฟีด)')
@@ -291,19 +297,28 @@ const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 ].map(cmd => cmd.toJSON());
 
+// ─── DISCORD CLIENT EVENTS ──────────────────────────────────────────────────
+
 client.once('ready', async () => {
   console.log(`🎙️ บอท jookCast ${BOT_VERSION} พร้อมใช้งานแล้ว!`);
   if (client.user?.id) {
     try {
       const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN!);
       await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-      console.log('✅ ลงทะเบียนคำสั่ง Slash Commands ใหม่เรียบร้อย (ไม่มี /lucky และ /submit_code)');
+      console.log('✅ ลงทะเบียนคำสั่ง Slash Commands ใหม่เรียบร้อย');
       
-      await setupStatusChannelAndNotify(client);
+      // กวาดตรวจสอบทุกเซิร์ฟเวอร์ที่บอทอาศัยอยู่ ณ ตอนเปิดเครื่อง
+      await setupAllGuildsChannels(client);
     } catch (err) {
       console.error('❌ ข้อผิดพลาดในขั้นตอนเปิดระบบแรดดี้:', err);
     }
   }
+});
+
+// 🔥 [✨ ฟีเจอร์ใหม่] ทำงานทันทีเมื่อมีคนเชิญบอทเข้าเซิร์ฟเวอร์ใหม่หน้างานโดยไม่ต้องรีสตาร์ทบอท
+client.on('guildCreate', async (guild) => {
+  console.log(`📥 บอทถูกเชิญเข้าเซิร์ฟเวอร์ใหม่: ${guild.name} (ID: ${guild.id})`);
+  await setupSingleGuildChannels(guild);
 });
 
 // ─── INTERACTION HANDLERS ───────────────────────────────────────────────────
@@ -318,7 +333,7 @@ client.on('interactionCreate', async (interaction) => {
 
       try {
         const videos = await searchYouTubeFiveVideos(keyword);
-        if (videos.length === 0) return interaction.editReply(`❌ 不พบผลลัพธ์สำหรับคำว่า: \`${keyword}\``);
+        if (videos.length === 0) return interaction.editReply(`❌ ไม่พบผลลัพธ์สำหรับคำว่า: \`${keyword}\``);
 
         const selectMenu = new StringSelectMenuBuilder()
           .setCustomId('search-select')
@@ -484,7 +499,6 @@ client.on('interactionCreate', async (interaction) => {
 
     if (commandName === 'setup_host') {
       try {
-        // ใช้ URL ของ Render แพลตฟอร์มหลังบ้านเป็น Endpoint หลักในการดักจับรหัสอัตโนมัติ
         const oAuth2Client = getYouTubeOAuth2Client();
         const authUrl = oAuth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: 'consent' });
         await interaction.reply({ content: `🔑 **ระบบผูกสิทธิ์บัญชี Host ตู้เพลงอัตโนมัติ:**\n1. ล็อกอินสิทธิ์โดย: [คลิกเชื่อมต่อที่นี่](${authUrl})\n2. หลังจากกดอนุญาตเสร็จ หน้าเว็บหลังบ้านจะซิงค์ข้อมูลบันทึกรหัสล็อกอินให้เองทันทีโดยที่พี่ไม่ต้องเอารหัสมาก๊อปวางแล้วครับ!`, ephemeral: true });
@@ -506,7 +520,6 @@ client.on('interactionCreate', async (interaction) => {
       const playlistName = interaction.options.getString('name', true).trim();
       const privacy = interaction.options.getString('privacy') ?? 'unlisted';
       try {
-        // 1. สั่งสร้างเพลย์ลิสต์ใหม่บนคลัง YouTube
         const generatedId = await createNewYouTubePlaylist(playlistName, privacy);
         if (!generatedId) throw new Error('ไม่ได้รับไอดีกลับมาจาก YouTube');
         
@@ -514,7 +527,6 @@ client.on('interactionCreate', async (interaction) => {
         config.playlistId = generatedId;
         saveConfig(config);
 
-        // 2. [Auto-Embed Intro] หยอดเพลงเปิดสถานีเพลงแรกเข้าไปในคิวทันที เพื่อความง่ายในการกดยิงจอแท็บเล็ต
         let embedStatus = '';
         try {
           const introSnippet = await addSongToPlaylist(INTRO_VIDEO_ID);
@@ -576,7 +588,6 @@ http.createServer(async (req, res) => {
     return;
   }
 
-  // ตัวดักรับ Callback อัตโนมัติ ย้าย Logic การถอดรหัสจากดิสคอร์ดมาลงฝั่งเว็บเซิร์ฟเวอร์โดยตรง
   if (parsedUrl.pathname === '/api/callback') {
     const code = parsedUrl.query.code as string;
     if (!code) {
@@ -590,7 +601,6 @@ http.createServer(async (req, res) => {
       const { tokens } = await oAuth2Client.getToken(code);
       fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens, null, 2), 'utf8');
       
-      // ส่งสัญญาณแจ้งเตือนบอกแอดมินเข้าไปในดิสคอร์ดช่องฟีดเงียบ ๆ ว่าซิงค์สำเร็จแล้ว
       client.guilds.cache.forEach(async (guild) => {
         const feedChannel = guild.channels.cache.find(ch => ch.name === 'jookcast-feed' && ch.isTextBased()) as TextChannel;
         if (feedChannel) {
@@ -608,7 +618,7 @@ http.createServer(async (req, res) => {
   }
 
   res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-  res.end(`jookCast Status: ${BOT_VERSION} is standing by! 🎙️🎵 (ระบบผูกสิทธิ์ออโต้พร้อมใช้งาน)`);
+  res.end(`jookCast Status: ${BOT_VERSION} is standing by! 🎙️🎵`);
 }).listen(PORT, () => {
   console.log(`🌐 Web Server Automation Live on Port ${PORT}`);
 });
