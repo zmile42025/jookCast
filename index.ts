@@ -69,12 +69,35 @@ const client = new Client({
 });
 
 function getYouTubeOAuth2Client() {
-  if (!fs.existsSync(CREDENTIALS_PATH)) {
-    throw new Error('ไม่พบไฟล์ credentials.json ในเครื่อง กรุณาใส่ไฟล์ก่อนรันบอท');
+  // 1. ตรวจสอบว่าพี่ใส่ค่าไว้ใน Environment Variables ของ Render หรือไม่
+  if (process.env.YOUTUBE_CLIENT_ID && process.env.YOUTUBE_CLIENT_SECRET) {
+    const clientId = process.env.YOUTUBE_CLIENT_ID;
+    const clientSecret = process.env.YOUTUBE_CLIENT_SECRET;
+    const redirectUri = process.env.RENDER_EXTERNAL_URL 
+      ? `${process.env.RENDER_EXTERNAL_URL}/api/callback` 
+      : (process.env.YOUTUBE_REDIRECT_URI ?? 'http://localhost:10000/api/callback');
+
+    return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
   }
+
+  // 2. อ่านจากไฟล์ credentials.json (รองรับทั้ง Web App และ Desktop App)
+  if (!fs.existsSync(CREDENTIALS_PATH)) {
+    throw new Error('ไม่พบข้อมูลแอปใน Environment และไม่พบไฟล์ credentials.json กรุณาตั้งค่าก่อนใช้งาน');
+  }
+  
   const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8'));
-  const { client_secret, client_id, redirect_uris } = credentials.installed;
-  return new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
+  
+  // ✨ จุดแก้ตายตัว: ถ้าดึงจาก Web app ให้ใช้ credentials.web ถ้าดึงจาก Desktop ให้ใช้ credentials.installed
+  const target = credentials.web || credentials.installed;
+  
+  if (!target) {
+    throw new Error('โครงสร้างไฟล์ credentials.json ไม่ถูกต้อง ไม่พบหัวข้อ web หรือ installed');
+  }
+  
+  // ดึง Redirect URI ตัวแรกจากในไฟล์มาใช้
+  const redirectUri = target.redirect_uris?.[0] ?? 'http://localhost:10000/api/callback';
+  
+  return new google.auth.OAuth2(target.client_id, target.client_secret, redirectUri);
 }
 
 function getYouTubeClient() {
