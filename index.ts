@@ -647,3 +647,12 @@ http.createServer(async (req, res) => {
 }).listen(PORT, () => {
   console.log(`🌐 Web Server Automation Live on Port ${PORT}`);
 });
+
+// ─── 🔌 DISCORD LOGIN (ย้ายมาอยู่จุดท้ายสุดของไฟล์เพื่อให้บอทออนไลน์อย่างสมบูรณ์) ───
+if (!DISCORD_TOKEN) {
+  console.error('❌ ไม่พบ DISCORD_TOKEN ในระบบ Environment');
+} else {
+  client.login(DISCORD_TOKEN).catch((err) => {
+    console.error('❌ Discord Login Failed:', err.message);
+  });
+}
